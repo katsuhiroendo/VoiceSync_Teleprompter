@@ -161,6 +161,13 @@ export interface SpeechEngineCallbacks {
   onError: (error: SpeechErrorInfo | null) => void;
 }
 
+export const MAX_AUTO_RESTART_RETRIES = 8;
+
+export function computeRestartBackoffMs(retryAttempt: number): number {
+  if (retryAttempt <= 0) return 180;
+  return Math.min(3000, Math.round(220 * Math.pow(1.6, Math.min(retryAttempt, 6))));
+}
+
 /**
  * 画面の再描画（React state更新）に影響されず、またマイクの重複起動やメモリリークを起こさない
  * リアルタイム音声認識＆音量モニター管理クラス
@@ -180,6 +187,9 @@ export class SpeechRecognitionController {
   private callbacks: SpeechEngineCallbacks;
   private processedFinalSignatures = new Set<string>();
   private lastSpeechTimestamp = 0;
+  private lastStartTimestamp = 0;
+  private consecutiveErrorRestarts = 0;
+  private lastEndWasNormalSilence = false;
 
   constructor(callbacks: SpeechEngineCallbacks) {
     this.callbacks = callbacks;
@@ -240,6 +250,7 @@ export class SpeechRecognitionController {
     }
 
     this.isDesiredActive = true;
+    this.consecutiveErrorRestarts = 0;
     this.callbacks.onError(null);
     this.callbacks.onStatusChange('connecting');
 
@@ -305,11 +316,14 @@ export class SpeechRecognitionController {
 
     rec.onstart = () => {
       this.isRecognitionRunning = true;
+      this.lastStartTimestamp = Date.now();
+      this.lastEndWasNormalSilence = false;
       this.callbacks.onStatusChange('listening');
     };
 
     rec.onspeechstart = () => {
       this.lastSpeechTimestamp = Date.now();
+      this.consecutiveErrorRestarts = 0;
       this.callbacks.onStatusChange('speaking');
     };
 
@@ -321,6 +335,7 @@ export class SpeechRecognitionController {
 
     rec.onresult = (event: WebSpeechRecognitionEvent) => {
       this.lastSpeechTimestamp = Date.now();
+      this.consecutiveErrorRestarts = 0;
       const totalResults = event.results.length;
       if (totalResults === 0) return;
 
@@ -364,8 +379,9 @@ export class SpeechRecognitionController {
     rec.onerror = (event: WebSpeechRecognitionErrorEvent) => {
       const errCode = event.error;
 
-      // 無音状態（no-speech）はエラー扱いせず、自動再起動して待機を継続する（4.2 途中で数秒間沈黙した場合）
+      // 無音状態（no-speech）はエラー扱いせず、自動再起動して待機を継続する（4.2 & 7.5 途中で2秒/5秒/10秒間沈黙した場合）
       if (errCode === 'no-speech' || errCode === 'aborted') {
+        this.lastEndWasNormalSilence = true;
         if (this.isDesiredActive) {
           this.callbacks.onStatusChange('listening');
         }
@@ -395,15 +411,33 @@ export class SpeechRecognitionController {
       this.isRecognitionRunning = false;
       this.processedFinalSignatures.clear();
 
-      // ユーザーが停止しておらず、10秒以上の沈黙などでブラウザが自動切断した場合はシームレスに再起動
+      // Section 7.5: ユーザーが停止しておらず、無音タイムアウト等で切断された場合は再試行上限とバックオフ付きで自動再開
       if (this.isDesiredActive) {
+        const uptimeMs = Date.now() - this.lastStartTimestamp;
+        if (!this.lastEndWasNormalSilence && uptimeMs < 600) {
+          this.consecutiveErrorRestarts += 1;
+        } else {
+          this.consecutiveErrorRestarts = 0;
+        }
+
+        if (this.consecutiveErrorRestarts > MAX_AUTO_RESTART_RETRIES) {
+          this.isDesiredActive = false;
+          this.stopAudioMeter();
+          this.callbacks.onStatusChange('error');
+          this.callbacks.onError(
+            buildErrorInfo('音声認識の自動再開上限に達しました')
+          );
+          return;
+        }
+
+        const delayMs = computeRestartBackoffMs(this.consecutiveErrorRestarts);
         this.restartTimerId = setTimeout(() => {
           if (!this.isDesiredActive) return;
           const Ctor = getSpeechRecognitionConstructor();
           if (Ctor) {
             this.initAndStartRecognition(Ctor);
           }
-        }, 180);
+        }, delayMs);
       }
     };
 

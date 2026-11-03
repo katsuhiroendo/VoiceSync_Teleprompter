@@ -15,6 +15,7 @@ import {
   normalizeTextForMatching,
   computeSegmentDisplayHierarchy,
 } from '@/lib/scriptParser';
+import { stripJapaneseFillers } from '@/lib/japaneseNormalizer';
 import {
   SpeechRecognitionController,
   SpeechTranscriptEvent,
@@ -398,8 +399,10 @@ export function TeleprompterStage({
         lastAdvanceSpokenLengthRef.current = 0;
       }
 
-      // Normalize first so kanji conversion changes on the prefix do not break length-based slicing
-      const fullSpokenNorm = normalizeTextForMatching(event.transcript);
+      // Normalize first (after stripping hesitation fillers) so kanji conversion changes on the prefix do not break length-based slicing
+      const fullSpokenNorm = normalizeTextForMatching(
+        stripJapaneseFillers(event.transcript)
+      );
       latestResultIndexRef.current = event.resultIndex;
       latestSpokenNormLenRef.current = fullSpokenNorm.length;
 
@@ -1867,6 +1870,11 @@ export function TeleprompterStage({
                 <p className="mt-1 text-xs text-zinc-300">
                   {speechError.message}
                 </p>
+                {cameraStatus === 'recording' && (
+                  <p className="mt-1 text-xs font-semibold text-emerald-400">
+                    ※ カメラ録画は停止せずそのまま継続中です。下のボタンから「一定速度」または「手動」に切り替えて撮影を続行できます。
+                  </p>
+                )}
               </div>
             </div>
             <button

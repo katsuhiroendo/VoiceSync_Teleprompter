@@ -1,5 +1,9 @@
 import { ScriptSegment } from '@/types/prompter';
 import { normalizeTextForMatching } from '@/lib/scriptParser';
+import {
+  extractSelfCorrectionCandidate,
+  toJapanesePhoneticReading,
+} from '@/lib/japaneseNormalizer';
 
 export interface MatchEvaluationResult {
   matchedSegmentIndex: number;
@@ -149,6 +153,11 @@ export interface FindBestSegmentOptions {
    * 一度スクロールして進んだ段落・フレーズからは音声認識で後ろへ戻らないようにする（デフォルト: false、ステージ側では設定に応じて渡す）
    */
   allowBacktrack?: boolean;
+  /**
+   * Phase 5 ベンチマーク比較用：true の場合は改善前（表層正規化のみ）で評価し、false（標準）の場合は
+   * 読み正規化・漢数字/英単語統一・フィラー除去・言い直し補正を含む複合スコアリングを使用する。
+   */
+  useLegacyNormalizationOnly?: boolean;
 }
 
 /**
@@ -271,6 +280,7 @@ export function findBestMatchingSegment(
     isFinal,
     preventBacktrackToIndex = null,
     allowBacktrack = true,
+    useLegacyNormalizationOnly = false,
   } = options;
 
   if (segments.length === 0) {
@@ -289,9 +299,22 @@ export function findBestMatchingSegment(
     Math.min(segments.length - 1, currentIndex)
   );
   const spokenNorm = normalizeTextForMatching(spokenRawText);
+  const spokenReading = useLegacyNormalizationOnly
+    ? spokenNorm
+    : toJapanesePhoneticReading(spokenRawText);
+  const selfCorrectionRaw = useLegacyNormalizationOnly
+    ? null
+    : extractSelfCorrectionCandidate(spokenRawText);
+  const selfCorrectionReading = selfCorrectionRaw
+    ? toJapanesePhoneticReading(selfCorrectionRaw)
+    : null;
+
+  const effectiveLength = useLegacyNormalizationOnly
+    ? spokenNorm.length
+    : Math.max(spokenReading.length, selfCorrectionReading?.length ?? 0);
 
   // 極端に短い発話（1〜2文字の相槌やノイズ「あ」「えー」など）は位置を動かさない
-  if (spokenNorm.length < 3) {
+  if (effectiveLength < 3) {
     return {
       matchedSegmentIndex: safeCurrentIdx,
       similarityScore: 0,
@@ -302,22 +325,70 @@ export function findBestMatchingSegment(
     };
   }
 
+  // Helper to evaluate composite similarity (surface + phonetic reading + self-correction) against a segment (Section 7.3 & 7.4)
+  const scoreSegmentComposite = (seg: ScriptSegment): number => {
+    const surfaceScore = evaluateSpokenAgainstSegment(
+      spokenNorm,
+      seg.normalizedText
+    );
+    if (useLegacyNormalizationOnly) {
+      return surfaceScore;
+    }
+    const segReading = seg.readingText || toJapanesePhoneticReading(seg.text);
+    const readingScore = evaluateSpokenAgainstSegment(
+      spokenReading,
+      segReading
+    );
+    const correctionScore = selfCorrectionReading
+      ? evaluateSpokenAgainstSegment(selfCorrectionReading, segReading)
+      : 0;
+    return Math.max(surfaceScore, readingScore * 0.99, correctionScore * 0.98);
+  };
+
+  // Helper to evaluate head similarity for a segment
+  const scoreSegmentHeadComposite = (
+    seg: ScriptSegment,
+    ratio = 0.65
+  ): number => {
+    const surfaceHeadLen = Math.max(
+      4,
+      Math.ceil(seg.normalizedText.length * ratio)
+    );
+    const surfaceHeadScore = evaluateSpokenAgainstSegment(
+      spokenNorm,
+      seg.normalizedText.slice(0, surfaceHeadLen)
+    );
+    if (useLegacyNormalizationOnly) {
+      return surfaceHeadScore;
+    }
+    const segReading = seg.readingText || toJapanesePhoneticReading(seg.text);
+    const readingHeadLen = Math.max(4, Math.ceil(segReading.length * ratio));
+    const readingHeadScore = evaluateSpokenAgainstSegment(
+      spokenReading,
+      segReading.slice(0, readingHeadLen)
+    );
+    const correctionHeadScore = selfCorrectionReading
+      ? evaluateSpokenAgainstSegment(
+          selfCorrectionReading,
+          segReading.slice(0, readingHeadLen)
+        )
+      : 0;
+    return Math.max(
+      surfaceHeadScore,
+      readingHeadScore * 0.99,
+      correctionHeadScore * 0.98
+    );
+  };
+
   // 感度設定 (0.35〜0.9) からベース閾値を計算（感度が高いほど閾値を下げる）
   // 標準 sensitivity=0.65 のとき baseThreshold ≈ 0.46
   const baseThreshold = Math.max(0.32, Math.min(0.68, 0.85 - sensitivity * 0.6));
 
   const currentSeg = segments[safeCurrentIdx];
-  const currentScore = evaluateSpokenAgainstSegment(
-    spokenNorm,
-    currentSeg.normalizedText
-  );
+  const currentScore = scoreSegmentComposite(currentSeg);
 
   // 直前に先行送り（early-trigger-advance等）されたばかりで、話者がまだ1つ前のセグメントの後半（文末）を
   // 読み終えている途中の場合は、現在のセグメント（N+1）に留まり、さらなる次セグメント（N+2等）への連鎖飛び越しを防ぐ。
-  // 条件：
-  // 1) 発話が直前セグメント（preventBacktrackToIndex）と一致しており現在セグメントより高い、または
-  // 2) 現在セグメントの冒頭（先頭65%領域）とはまだほとんど一致していないのに、文末の定型語（「ます」「です」等）だけで
-  //    現在セグメントやその先のセグメントの末尾と部分一致してしまっている場合
   if (
     preventBacktrackToIndex !== null &&
     preventBacktrackToIndex >= 0 &&
@@ -325,19 +396,8 @@ export function findBestMatchingSegment(
     preventBacktrackToIndex !== safeCurrentIdx
   ) {
     const prevSeg = segments[preventBacktrackToIndex];
-    const prevScore = evaluateSpokenAgainstSegment(
-      spokenNorm,
-      prevSeg.normalizedText
-    );
-    const currentHeadLen = Math.max(
-      4,
-      Math.ceil(currentSeg.normalizedText.length * 0.65)
-    );
-    const currentHeadSlice = currentSeg.normalizedText.slice(0, currentHeadLen);
-    const currentHeadScore = evaluateSpokenAgainstSegment(
-      spokenNorm,
-      currentHeadSlice
-    );
+    const prevScore = scoreSegmentComposite(prevSeg);
+    const currentHeadScore = scoreSegmentHeadComposite(currentSeg, 0.65);
 
     // まだ新しいセグメントの前半を読み始めておらず、前のセグメントの残り言葉（または文末の共通語尾）を話している段階
     if (
@@ -355,39 +415,48 @@ export function findBestMatchingSegment(
     }
   }
 
-  // 現在のセグメントが段落の最終フレーズ（次が別段落）かどうかを判定
-  // ユーザーが設定した先行送りタイミング（advanceTriggerRatio）を忠実に適用する
-  // （以前は段落末で -0.05 前倒ししていたため、設定より早くスクロールして最後の部分が読めない原因になっていた）
   const effectiveTriggerRatio = advanceTriggerRatio;
 
-  const progressRatio = estimateSegmentProgressRatio(
+  const surfaceProgress = estimateSegmentProgressRatio(
     spokenNorm,
     currentSeg.normalizedText
   );
+  const currentSegReading =
+    currentSeg.readingText || toJapanesePhoneticReading(currentSeg.text);
+  const readingProgress = useLegacyNormalizationOnly
+    ? 0
+    : estimateSegmentProgressRatio(
+        selfCorrectionReading || spokenReading,
+        currentSegReading
+      );
+  const progressRatio = Math.max(surfaceProgress, readingProgress);
 
-  // 現在セグメントの末尾付近、または指定された先行送りタイミング（advanceTriggerRatio）に到達したか
-  // ※ 前の文の文末（「〜ます」「〜です」等）だけが一致して誤って100%進捗にならないよう、
-  //    現在セグメントの前半〜中盤もある程度読まれていること（headOrBodyScore >= 0.42 または spokenNorm が6文字以上）を条件とする
-  const currentHeadLen = Math.max(
-    4,
-    Math.ceil(currentSeg.normalizedText.length * 0.65)
-  );
-  const currentHeadScore = evaluateSpokenAgainstSegment(
-    spokenNorm,
-    currentSeg.normalizedText.slice(0, currentHeadLen)
-  );
+  const currentHeadScore = scoreSegmentHeadComposite(currentSeg, 0.65);
   const hasStartedReadingCurrent =
     currentSeg.normalizedText.length <= 10 ||
     currentHeadScore >= 0.42 ||
-    spokenNorm.length >= Math.min(10, Math.floor(currentSeg.normalizedText.length * 0.45));
+    effectiveLength >=
+      Math.min(10, Math.floor(currentSeg.normalizedText.length * 0.45));
 
-  const tailOfCurrent = currentSeg.normalizedText.slice(-8);
+  const tailOfCurrentSurface = currentSeg.normalizedText.slice(-8);
+  const tailOfCurrentReading = currentSegReading.slice(-8);
+  const activeReadingQuery = selfCorrectionReading || spokenReading;
+
   const isNearEndOfCurrent =
     hasStartedReadingCurrent &&
-    ((tailOfCurrent.length >= 3 &&
+    (((tailOfCurrentSurface.length >= 3 &&
       spokenNorm.length >= 5 &&
-      computeBigramDiceSimilarity(spokenNorm.slice(-8), tailOfCurrent) >=
-        0.65) ||
+      computeBigramDiceSimilarity(
+        spokenNorm.slice(-8),
+        tailOfCurrentSurface
+      ) >= 0.65) ||
+      (!useLegacyNormalizationOnly &&
+        tailOfCurrentReading.length >= 3 &&
+        activeReadingQuery.length >= 5 &&
+        computeBigramDiceSimilarity(
+          activeReadingQuery.slice(-8),
+          tailOfCurrentReading
+        ) >= 0.65)) ||
       (currentScore >= baseThreshold * 0.85 &&
         progressRatio >= effectiveTriggerRatio));
 
@@ -403,13 +472,10 @@ export function findBestMatchingSegment(
     if (idx === safeCurrentIdx) continue;
 
     const candidate = segments[idx];
-    const rawScore = evaluateSpokenAgainstSegment(
-      spokenNorm,
-      candidate.normalizedText
-    );
+    const rawScore = scoreSegmentComposite(candidate);
     const delta = idx - safeCurrentIdx;
 
-    // 距離に応じた近傍優先重み付け（4.3.3 現在位置の周辺を優先）
+    // 距離に応じた近傍優先重み付け（4.3.3 & 7.4 現在位置の周辺・前後連続性を優先）
     let proximityMultiplier = 1.0;
     if (delta === 1) {
       // 直後のフレーズは最も自然な遷移先なので優遇
@@ -480,12 +546,12 @@ export function findBestMatchingSegment(
     // isFinal確定時、または12文字以上で非常に高い類似度（>= 0.80）かつ現在セグメントより明確に高い場合のみ許可する
     if (delta === 2) {
       const canSkipOneOnInterim =
-        spokenNorm.length >= 12 &&
+        effectiveLength >= 12 &&
         bestRawScore >= Math.max(0.80, baseThreshold + 0.20) &&
         bestRawScore > currentScore + 0.18;
       if (
         (isFinal &&
-          spokenNorm.length >= 7 &&
+          effectiveLength >= 7 &&
           bestRawScore >= baseThreshold + 0.14 &&
           bestRawScore > currentScore + 0.12) ||
         canSkipOneOnInterim
@@ -517,9 +583,10 @@ export function findBestMatchingSegment(
   // bestRawScore > currentScore + 0.25 かつ、飛び先セグメントの広範囲（または冒頭）と75%以上一致していることを要求する。
   if (delta >= 3) {
     const jumpThreshold = Math.min(0.86, baseThreshold + 0.25);
-    const candidateNorm = segments[bestIdx].normalizedText;
+    const candidateSeg = segments[bestIdx];
+    const candidateNorm = candidateSeg.normalizedText;
     const headLen = Math.min(16, candidateNorm.length);
-    const headMatchScore = Math.max(
+    const surfaceHeadMatch = Math.max(
       computeBigramDiceSimilarity(
         spokenNorm.slice(0, headLen),
         candidateNorm.slice(0, headLen)
@@ -529,12 +596,18 @@ export function findBestMatchingSegment(
         candidateNorm.slice(0, headLen)
       )
     );
+    const compositeHeadMatch = useLegacyNormalizationOnly
+      ? surfaceHeadMatch
+      : Math.max(
+          surfaceHeadMatch,
+          scoreSegmentHeadComposite(candidateSeg, 0.7)
+        );
 
     if (
       isFinal &&
-      spokenNorm.length >= 10 &&
+      effectiveLength >= 10 &&
       bestRawScore >= jumpThreshold &&
-      headMatchScore >= 0.65 &&
+      compositeHeadMatch >= 0.65 &&
       bestRawScore > currentScore + 0.24
     ) {
       return {
@@ -572,11 +645,12 @@ export function findBestMatchingSegment(
       baseThreshold + (isCrossParagraphBacktrack ? 0.30 : 0.25)
     );
     const minBacktrackLength = isCrossParagraphBacktrack ? 10 : 8;
-    const canBacktrackOnInterim = spokenNorm.length >= 16 && bestRawScore >= 0.88;
+    const canBacktrackOnInterim =
+      effectiveLength >= 16 && bestRawScore >= 0.88;
 
     if (
       (isFinal || canBacktrackOnInterim) &&
-      spokenNorm.length >= minBacktrackLength &&
+      effectiveLength >= minBacktrackLength &&
       bestRawScore >= backtrackThreshold &&
       bestRawScore > currentScore + 0.25
     ) {

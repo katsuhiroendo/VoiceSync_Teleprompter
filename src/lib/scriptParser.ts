@@ -1,4 +1,5 @@
 import { LookaheadLinesPreset, ScriptSegment } from '@/types/prompter';
+import { toJapanesePhoneticReading } from '@/lib/japaneseNormalizer';
 
 const KANJI_VARIANT_DICTIONARY: Array<[RegExp, string]> = [
   [/皆さん/g, 'みなさん'],
@@ -72,6 +73,14 @@ export function normalizeTextForMatching(text: string): string {
 }
 
 /**
+ * Phase 5 (Section 7.2 & 7.3):
+ * 漢字の読み（ひらがな）・漢数字/アラビア数字・英単語/カタカナ・フィラー除去まで含めた高度な読み正規化
+ */
+export function normalizeTextWithPhonetics(text: string): string {
+  return toJapanesePhoneticReading(text);
+}
+
+/**
  * 原稿を段落および短いフレーズ（セグメント）単位に分割する。
  * 日本語の句点「。」「！」「？」や改行、または長すぎる読点区切りを適切な長さ（20〜55文字程度）で分割し、
  * カメラ目線で読みやすく、かつ音声追従の粒度として最適なセグメント配列を生成する。
@@ -111,6 +120,7 @@ export function parseScriptToSegments(content: string): ScriptSegment[] {
               paragraphIndex: pIdx,
               text,
               normalizedText: normalizeTextForMatching(text),
+              readingText: toJapanesePhoneticReading(text),
               startCharOffset: charCursor,
               endCharOffset: charCursor + text.length,
             });
@@ -128,6 +138,7 @@ export function parseScriptToSegments(content: string): ScriptSegment[] {
             paragraphIndex: pIdx,
             text,
             normalizedText: normalizeTextForMatching(text),
+            readingText: toJapanesePhoneticReading(text),
             startCharOffset: charCursor,
             endCharOffset: charCursor + text.length,
           });
@@ -140,6 +151,7 @@ export function parseScriptToSegments(content: string): ScriptSegment[] {
           paragraphIndex: pIdx,
           text: sentence,
           normalizedText: normalizeTextForMatching(sentence),
+          readingText: toJapanesePhoneticReading(sentence),
           startCharOffset: charCursor,
           endCharOffset: charCursor + sentence.length,
         });

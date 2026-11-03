@@ -6,6 +6,7 @@ export interface ScriptSegment {
   paragraphIndex: number;
   text: string;
   normalizedText: string;
+  readingText?: string;       // Phase 5: ひらがな読み・漢数字/英単語統一テキスト
   startCharOffset: number;
   endCharOffset: number;
 }
