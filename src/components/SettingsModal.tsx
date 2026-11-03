@@ -730,7 +730,7 @@ export function SettingsModal({
                 />
                 <div className="flex justify-between text-[10px] text-zinc-500">
                   <span>40% (早め)</span>
-                  <span>85% (標準・文末近く)</span>
+                  <span>90% (標準・文末近く)</span>
                   <span>95% (完全に言い切ってから)</span>
                 </div>
               </div>

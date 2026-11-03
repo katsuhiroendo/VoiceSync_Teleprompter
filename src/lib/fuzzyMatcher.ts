@@ -267,7 +267,7 @@ export function findBestMatchingSegment(
   const {
     currentIndex,
     sensitivity,
-    advanceTriggerRatio = 0.85,
+    advanceTriggerRatio = 0.90,
     isFinal,
     preventBacktrackToIndex = null,
     allowBacktrack = true,
