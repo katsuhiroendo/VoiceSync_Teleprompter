@@ -56,6 +56,7 @@ import {
   serializeMarkersToCSV,
   serializeMarkersToJSON,
 } from '@/lib/ngMarkerService';
+import { AudioTestModal } from '@/components/AudioTestModal';
 import {
   Play,
   Pause,
@@ -88,6 +89,7 @@ import {
   HardDrive,
   Trash2,
   Flag,
+  Activity,
 } from 'lucide-react';
 
 interface TeleprompterStageProps {
@@ -213,6 +215,8 @@ export function TeleprompterStage({
     null
   );
   const [customMarkerNote, setCustomMarkerNote] = useState<string>('');
+  // Phase 2: Audio Quality Check Modal state
+  const [isAudioTestOpen, setIsAudioTestOpen] = useState<boolean>(false);
 
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -1662,6 +1666,29 @@ export function TeleprompterStage({
 
         {/* Right Quick Toggles */}
         <div className="flex items-center gap-2">
+          {/* Phase 2 (Section 4.2 & 4.6): Pre-recording Audio Quality Check Button */}
+          <button
+            type="button"
+            disabled={cameraStatus === 'recording'}
+            onClick={() => {
+              if (cameraStatus === 'recording') return;
+              // Pause live voice tracking while running the independent 10s audio quality test to prevent double mic acquisition
+              if (isPlaying) {
+                setIsPlaying(false);
+              }
+              setIsAudioTestOpen(true);
+            }}
+            className="flex min-h-[42px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs font-medium text-emerald-300 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+            title={
+              cameraStatus === 'recording'
+                ? 'カメラ録画中は録音テストを実行できません'
+                : '撮影前の録音品質・環境ノイズ・音声認識テスト (10秒)'
+            }
+          >
+            <Activity className="h-4 w-4" />
+            <span className="hidden lg:inline">録音テスト</span>
+          </button>
+
           {/* MacBook Camera Preview Toggle */}
           <button
             type="button"
@@ -2761,6 +2788,17 @@ export function TeleprompterStage({
           )}
         </div>
       </footer>
+
+      {/* Phase 2: 10-second Pre-recording Audio Quality & Speech Recognition Check Modal */}
+      <AudioTestModal
+        isOpen={isAudioTestOpen}
+        onClose={() => setIsAudioTestOpen(false)}
+        preferredAudioDeviceId={
+          selectedAudioDeviceId || settings.preferredAudioDeviceId
+        }
+        language={script.language}
+        isVideoRecordingActive={cameraStatus === 'recording'}
+      />
     </div>
   );
 }
