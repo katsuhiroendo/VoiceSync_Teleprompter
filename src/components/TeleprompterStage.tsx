@@ -227,6 +227,7 @@ export function TeleprompterStage({
         {
           currentIndex: activeIndexRef.current,
           sensitivity: settingsRef.current.trackingSensitivity,
+          advanceTriggerRatio: settingsRef.current.advanceTriggerRatio,
           isFinal: event.isFinal,
         }
       );

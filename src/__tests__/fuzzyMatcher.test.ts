@@ -171,4 +171,32 @@ describe('VoiceSync Fuzzy Matcher & 10 Required Test Cases (Section 14)', () => 
     expect(match.shouldAdvance).toBe(true);
     expect(elapsedMs).toBeLessThan(25); // 25ms未満で完了すること
   });
+
+  it('Early Paragraph Advance: advances to next segment/paragraph earlier when advanceTriggerRatio is lowered (e.g. 0.50)', () => {
+    const seg2Idx = segments.findIndex((s) =>
+      s.text.includes('今回の動画では')
+    );
+    // Uttering only up to the middle of segment 2 ("今回の動画では、カメラ目線を自然に維持しながら") as an interim result
+    const midUtterance = '今回の動画ではカメラ目線を自然に維持しながら';
+
+    // With strict 0.95 ratio, it waits until the end of the sentence
+    const strictRes = findBestMatchingSegment(midUtterance, segments, {
+      currentIndex: seg2Idx,
+      sensitivity: defaultSensitivity,
+      advanceTriggerRatio: 0.95,
+      isFinal: false,
+    });
+    expect(strictRes.shouldAdvance).toBe(false);
+    expect(strictRes.matchedSegmentIndex).toBe(seg2Idx);
+
+    // With early 0.45 ratio, it advances to the next paragraph/segment immediately during interim speech
+    const earlyRes = findBestMatchingSegment(midUtterance, segments, {
+      currentIndex: seg2Idx,
+      sensitivity: defaultSensitivity,
+      advanceTriggerRatio: 0.45,
+      isFinal: false,
+    });
+    expect(earlyRes.shouldAdvance).toBe(true);
+    expect(earlyRes.matchedSegmentIndex).toBe(seg2Idx + 1);
+  });
 });

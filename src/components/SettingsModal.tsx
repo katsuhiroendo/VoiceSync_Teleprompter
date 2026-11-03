@@ -645,6 +645,35 @@ export function SettingsModal({
               <div className="space-y-2 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
                 <div className="flex justify-between text-xs font-medium">
                   <span className="text-zinc-300">
+                    次の文・段落へ移るタイミング
+                  </span>
+                  <span className="font-mono text-sky-400">
+                    {Math.round(settings.advanceTriggerRatio * 100)}% 時点
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.40}
+                  max={0.95}
+                  step={0.05}
+                  value={settings.advanceTriggerRatio}
+                  onChange={(e) =>
+                    onUpdateSettings({
+                      advanceTriggerRatio: Number(e.target.value),
+                    })
+                  }
+                  className="w-full accent-sky-500"
+                />
+                <div className="flex justify-between text-[10px] text-zinc-500">
+                  <span>40% (かなり早め)</span>
+                  <span>70% (標準)</span>
+                  <span>95% (文末まで待つ)</span>
+                </div>
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <div className="flex justify-between text-xs font-medium">
+                  <span className="text-zinc-300">
                     スクロールの滑らかさ (減衰係数)
                   </span>
                   <span className="font-mono text-sky-400">

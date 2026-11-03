@@ -110,8 +110,44 @@ export function evaluateSpokenAgainstSegment(
 
 export interface FindBestSegmentOptions {
   currentIndex: number;
-  sensitivity: number; // 0.35〜0.9 (高いほど敏感に追従、標準0.65)
+  sensitivity: number;           // 0.35〜0.9 (高いほど敏感に追従、標準0.65)
+  advanceTriggerRatio?: number;  // 0.40〜0.95 (現在の文・段落の何割まで読んだら次へ先行遷移するか、標準0.70)
   isFinal: boolean;
+}
+
+/**
+ * 発話(spokenNorm)が現在セグメント(segmentNorm)のどの位置（0.0〜1.0）まで到達しているかを推定する。
+ */
+export function estimateSegmentProgressRatio(
+  spokenNorm: string,
+  segmentNorm: string
+): number {
+  if (!spokenNorm || !segmentNorm) return 0;
+
+  const query = spokenNorm.slice(-Math.min(10, spokenNorm.length));
+  if (query.length < 2) return 0;
+
+  // 完全一致する最後の位置を探す
+  const exactIdx = segmentNorm.lastIndexOf(query);
+  if (exactIdx !== -1) {
+    return (exactIdx + query.length) / segmentNorm.length;
+  }
+
+  // スライディングウィンドウで最も類似度が高い終端位置を探す
+  const winLen = Math.min(segmentNorm.length, Math.max(3, query.length));
+  let bestScore = 0;
+  let bestEndOffset = 0;
+
+  for (let pos = 0; pos <= segmentNorm.length - winLen; pos++) {
+    const slice = segmentNorm.slice(pos, pos + winLen);
+    const dice = computeBigramDiceSimilarity(query, slice);
+    if (dice >= bestScore && dice >= 0.6) {
+      bestScore = dice;
+      bestEndOffset = pos + winLen;
+    }
+  }
+
+  return bestEndOffset / segmentNorm.length;
 }
 
 /**
@@ -121,13 +157,19 @@ export interface FindBestSegmentOptions {
  * - 信頼度が低い場合は現在位置を維持する
  * - 大きな位置移動（前の文章の読み直し・次の段落へのジャンプ）には、より高い一致度を要求する
  * - 認識結果の揺らぎによって原稿表示が頻繁に前後しないようにする（ヒステリシス制御）
+ * - advanceTriggerRatio に基づき、現在フレーズや段落末の指定割合を通過した時点で次フレーズ・次段落へ先行遷移する
  */
 export function findBestMatchingSegment(
   spokenRawText: string,
   segments: ScriptSegment[],
   options: FindBestSegmentOptions
 ): MatchEvaluationResult {
-  const { currentIndex, sensitivity, isFinal } = options;
+  const {
+    currentIndex,
+    sensitivity,
+    advanceTriggerRatio = 0.70,
+    isFinal,
+  } = options;
 
   if (segments.length === 0) {
     return {
@@ -166,11 +208,28 @@ export function findBestMatchingSegment(
     currentSeg.normalizedText
   );
 
-  // 現在セグメントの末尾付近を読んでいる場合、次のセグメントへの自然な遷移を促す
+  // 現在のセグメントが段落の最終フレーズ（次が別段落）かどうかを判定
+  const isEndOfParagraph =
+    safeCurrentIdx + 1 < segments.length &&
+    segments[safeCurrentIdx + 1].paragraphIndex > currentSeg.paragraphIndex;
+
+  // 段落の切れ目では少し早めに次の段落を視界へ入れるため、トリガー位置を5%前倒しする
+  const effectiveTriggerRatio = isEndOfParagraph
+    ? Math.max(0.35, advanceTriggerRatio - 0.05)
+    : advanceTriggerRatio;
+
+  const progressRatio = estimateSegmentProgressRatio(
+    spokenNorm,
+    currentSeg.normalizedText
+  );
+
+  // 現在セグメントの末尾付近、または指定された先行送りタイミング（advanceTriggerRatio）に到達したか
   const tailOfCurrent = currentSeg.normalizedText.slice(-8);
   const isNearEndOfCurrent =
-    tailOfCurrent.length >= 3 &&
-    computeBigramDiceSimilarity(spokenNorm.slice(-8), tailOfCurrent) >= 0.65;
+    (tailOfCurrent.length >= 3 &&
+      computeBigramDiceSimilarity(spokenNorm.slice(-8), tailOfCurrent) >=
+        0.65) ||
+    (currentScore >= baseThreshold && progressRatio >= effectiveTriggerRatio);
 
   let bestIdx = safeCurrentIdx;
   let bestWeightedScore = currentScore;
@@ -221,8 +280,18 @@ export function findBestMatchingSegment(
 
   // 1. 同じセグメントに留まる場合
   if (delta === 0) {
-    // もし現在のセグメントの末尾を読み終えた確定結果であれば、次のセグメントへ一歩進める
-    if (isFinal && isNearEndOfCurrent && safeCurrentIdx + 1 < segments.length) {
+    // 確定結果(isFinal)で文末付近に到達した場合、またはユーザーが早め遷移(advanceTriggerRatio <= 0.80)を設定していて
+    // 途中認識(interim)でも指定割合を通過した場合は、文末を言い切る前に次のセグメント・段落へ一歩進める
+    const allowEarlyInterimAdvance =
+      effectiveTriggerRatio <= 0.80 &&
+      progressRatio >= effectiveTriggerRatio &&
+      currentScore >= baseThreshold + 0.08;
+
+    if (
+      (isFinal || allowEarlyInterimAdvance) &&
+      isNearEndOfCurrent &&
+      safeCurrentIdx + 1 < segments.length
+    ) {
       return {
         matchedSegmentIndex: safeCurrentIdx + 1,
         similarityScore: currentScore,
