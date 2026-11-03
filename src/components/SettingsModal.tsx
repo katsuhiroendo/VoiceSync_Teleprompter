@@ -641,6 +641,57 @@ export function SettingsModal({
                   className="w-full accent-sky-500"
                 />
               </div>
+
+              <div className="space-y-2 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <div className="flex justify-between text-xs font-medium">
+                  <span className="text-zinc-300">
+                    スクロールの滑らかさ (減衰係数)
+                  </span>
+                  <span className="font-mono text-sky-400">
+                    {settings.scrollSmoothness.toFixed(2)}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.06}
+                  max={0.3}
+                  step={0.02}
+                  value={settings.scrollSmoothness}
+                  onChange={(e) =>
+                    onUpdateSettings({
+                      scrollSmoothness: Number(e.target.value),
+                    })
+                  }
+                  className="w-full accent-sky-500"
+                />
+                <div className="flex justify-between text-[10px] text-zinc-500">
+                  <span>0.06 (しっとり)</span>
+                  <span>0.14 (標準)</span>
+                  <span>0.30 (俊敏)</span>
+                </div>
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <div className="flex justify-between text-xs font-medium">
+                  <span className="text-zinc-300">追従速度倍率</span>
+                  <span className="font-mono text-sky-400">
+                    {settings.trackingSpeed.toFixed(1)}x
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={2.0}
+                  step={0.1}
+                  value={settings.trackingSpeed}
+                  onChange={(e) =>
+                    onUpdateSettings({
+                      trackingSpeed: Number(e.target.value),
+                    })
+                  }
+                  className="w-full accent-sky-500"
+                />
+              </div>
             </div>
           </section>
         </div>

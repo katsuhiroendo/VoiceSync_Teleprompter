@@ -17,6 +17,7 @@ import {
 import { ScriptEditorWorkspace } from '@/components/ScriptEditorWorkspace';
 import { TeleprompterStage } from '@/components/TeleprompterStage';
 import { SettingsModal } from '@/components/SettingsModal';
+import { SyncModal } from '@/components/SyncModal';
 
 export default function HomePage() {
   const [scripts, setScripts] = useState<ScriptItem[]>(DEFAULT_SAMPLE_SCRIPTS);
@@ -28,7 +29,15 @@ export default function HomePage() {
   );
   const [mode, setMode] = useState<'edit' | 'stage'>('edit');
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isSyncOpen, setIsSyncOpen] = useState<boolean>(false);
   const [isHydrated, setIsHydrated] = useState<boolean>(false);
+
+  // Register Offline PWA Service Worker (Phase 5)
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  }, []);
 
   // Initial load from IndexedDB
   useEffect(() => {
@@ -138,6 +147,19 @@ export default function HomePage() {
     []
   );
 
+  const handleApplyMergedScripts = useCallback(
+    async (merged: ScriptItem[]) => {
+      for (const item of merged) {
+        await saveScript(item);
+      }
+      setScripts(merged);
+      if (merged.length > 0 && !merged.some((s) => s.id === activeScriptId)) {
+        setActiveScriptId(merged[0].id);
+      }
+    },
+    [activeScriptId]
+  );
+
   if (!isHydrated) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-zinc-950 text-zinc-400">
@@ -163,6 +185,7 @@ export default function HomePage() {
           onImportScriptFile={handleImportScriptFile}
           onStartTeleprompter={() => setMode('stage')}
           onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenSync={() => setIsSyncOpen(true)}
         />
       ) : (
         <TeleprompterStage
@@ -180,6 +203,13 @@ export default function HomePage() {
         settings={settings}
         onUpdateSettings={handleUpdateSettings}
         onResetSettings={handleResetSettings}
+      />
+
+      <SyncModal
+        isOpen={isSyncOpen}
+        onClose={() => setIsSyncOpen(false)}
+        scripts={scripts}
+        onApplyMergedScripts={handleApplyMergedScripts}
       />
     </>
   );

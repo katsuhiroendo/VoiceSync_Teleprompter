@@ -9,6 +9,15 @@ import {
 } from '@/types/prompter';
 import { parseScriptToSegments } from '@/lib/scriptParser';
 import {
+  SpeechRecognitionController,
+  SpeechTranscriptEvent,
+  SpeechErrorInfo,
+} from '@/lib/speechEngine';
+import {
+  findBestMatchingSegment,
+  MatchEvaluationResult,
+} from '@/lib/fuzzyMatcher';
+import {
   Play,
   Pause,
   RotateCcw,
@@ -25,6 +34,11 @@ import {
   Eye,
   Minus,
   Plus,
+  Bug,
+  AlertTriangle,
+  WifiOff,
+  CheckCircle2,
+  X,
 } from 'lucide-react';
 
 interface TeleprompterStageProps {
@@ -46,22 +60,22 @@ const STATUS_LABELS: Record<
   },
   connecting: {
     label: 'マイク接続中',
-    badgeClass: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+    badgeClass: 'border-amber-500/40 bg-amber-500/15 text-amber-300',
     dotClass: 'bg-amber-400 animate-pulse',
   },
   listening: {
     label: '音声認識中',
-    badgeClass: 'border-sky-500/40 bg-sky-500/10 text-sky-300',
+    badgeClass: 'border-sky-500/40 bg-sky-500/15 text-sky-300',
     dotClass: 'bg-sky-400 animate-pulse',
   },
   speaking: {
     label: '発話検出中',
-    badgeClass: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
+    badgeClass: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300',
     dotClass: 'bg-emerald-400 animate-ping',
   },
   matching: {
     label: '原稿照合中',
-    badgeClass: 'border-indigo-500/40 bg-indigo-500/10 text-indigo-300',
+    badgeClass: 'border-indigo-500/40 bg-indigo-500/15 text-indigo-300',
     dotClass: 'bg-indigo-400 animate-pulse',
   },
   paused: {
@@ -71,7 +85,7 @@ const STATUS_LABELS: Record<
   },
   error: {
     label: 'エラー',
-    badgeClass: 'border-red-500/40 bg-red-500/10 text-red-300',
+    badgeClass: 'border-red-500/50 bg-red-500/15 text-red-300',
     dotClass: 'bg-red-400',
   },
 };
@@ -88,30 +102,219 @@ export function TeleprompterStage({
     [script.content]
   );
 
-  const [scrollMode, setScrollMode] = useState<ScrollMode>('constant');
+  // Default to voice tracking mode (Section 4)
+  const [scrollMode, setScrollMode] = useState<ScrollMode>('voice');
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [activeSegmentIndex, setActiveSegmentIndex] = useState<number>(0);
   const [speechStatus, setSpeechStatus] = useState<SpeechStatus>('idle');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [controlsVisible, setControlsVisible] = useState<boolean>(true);
 
+  // Real-time speech recognition & debug state (Phase 2 & 3)
+  const [latestTranscript, setLatestTranscript] = useState<string>('');
+  const [isInterimTranscript, setIsInterimTranscript] =
+    useState<boolean>(false);
+  const [micVolumeLevel, setMicVolumeLevel] = useState<number>(0);
+  const [lastMatchResult, setLastMatchResult] =
+    useState<MatchEvaluationResult | null>(null);
+  const [speechError, setSpeechError] = useState<SpeechErrorInfo | null>(null);
+  const [isOffline, setIsOffline] = useState<boolean>(false);
+  const [simulationInput, setSimulationInput] = useState<string>('');
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const segmentRefs = useRef<(HTMLDivElement | null)[]>([]);
   const rafRef = useRef<number | null>(null);
+  const smoothScrollRafRef = useRef<number | null>(null);
+  const targetScrollTopRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number | null>(null);
   const hideControlsTimerRef = useRef<NodeJS.Timeout | null>(null);
   const programmaticScrollRef = useRef<boolean>(false);
 
-  // Sync speechStatus badge with current play state in Phase 1
-  useEffect(() => {
-    if (!isPlaying) {
-      setSpeechStatus((prev) => (prev === 'idle' ? 'idle' : 'paused'));
-    } else if (scrollMode === 'voice') {
-      setSpeechStatus('listening');
-    } else {
-      setSpeechStatus('idle');
+  // Refs to hold fresh state for the non-restarting SpeechRecognitionController
+  const activeIndexRef = useRef<number>(activeSegmentIndex);
+  activeIndexRef.current = activeSegmentIndex;
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const speechControllerRef = useRef<SpeechRecognitionController | null>(null);
+
+  // Smooth spring-damped scroll engine (Section 4.4: 滑らかなアニメーション、ちらつき防止)
+  const animateScrollToTarget = useCallback((desiredTop: number) => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    targetScrollTopRef.current = Math.max(
+      0,
+      Math.min(desiredTop, container.scrollHeight - container.clientHeight)
+    );
+
+    if (smoothScrollRafRef.current !== null) {
+      return; // Animation loop already running toward updated targetScrollTopRef
     }
-  }, [isPlaying, scrollMode]);
+
+    programmaticScrollRef.current = true;
+
+    const step = () => {
+      const el = scrollContainerRef.current;
+      const target = targetScrollTopRef.current;
+      if (!el || target === null) {
+        smoothScrollRafRef.current = null;
+        programmaticScrollRef.current = false;
+        return;
+      }
+
+      const current = el.scrollTop;
+      const diff = target - current;
+
+      if (Math.abs(diff) < 1.2) {
+        el.scrollTop = target;
+        targetScrollTopRef.current = null;
+        smoothScrollRafRef.current = null;
+        programmaticScrollRef.current = false;
+        return;
+      }
+
+      // Compute damping factor from settings.scrollSmoothness & trackingSpeed
+      const damping = Math.min(
+        0.45,
+        Math.max(
+          0.06,
+          settingsRef.current.scrollSmoothness *
+            settingsRef.current.trackingSpeed
+        )
+      );
+      el.scrollTop = current + diff * damping;
+      smoothScrollRafRef.current = requestAnimationFrame(step);
+    };
+
+    smoothScrollRafRef.current = requestAnimationFrame(step);
+  }, []);
+
+  // Scroll a specific segment smoothly to the reading guide line
+  const scrollToSegment = useCallback(
+    (index: number) => {
+      const container = scrollContainerRef.current;
+      const targetEl = segmentRefs.current[index];
+      if (!container || !targetEl) return;
+
+      const containerHeight = container.clientHeight;
+      const readingAnchorPx =
+        (settingsRef.current.readingLinePositionVh / 100) * containerHeight;
+
+      const targetOffsetTop = targetEl.offsetTop;
+      const targetHeight = targetEl.offsetHeight;
+      const desiredScrollTop = Math.max(
+        0,
+        targetOffsetTop - readingAnchorPx + targetHeight * 0.35
+      );
+
+      animateScrollToTarget(desiredScrollTop);
+    },
+    [animateScrollToTarget]
+  );
+
+  // Process recognized speech (from microphone or debug simulator) and match against script
+  const processRecognizedSpeech = useCallback(
+    (event: SpeechTranscriptEvent) => {
+      setLatestTranscript(event.transcript);
+      setIsInterimTranscript(!event.isFinal);
+      setSpeechStatus('matching');
+
+      const evaluation = findBestMatchingSegment(
+        event.transcript,
+        segmentsRef.current,
+        {
+          currentIndex: activeIndexRef.current,
+          sensitivity: settingsRef.current.trackingSensitivity,
+          isFinal: event.isFinal,
+        }
+      );
+
+      setLastMatchResult(evaluation);
+
+      if (
+        evaluation.shouldAdvance &&
+        evaluation.matchedSegmentIndex !== activeIndexRef.current
+      ) {
+        activeIndexRef.current = evaluation.matchedSegmentIndex;
+        setActiveSegmentIndex(evaluation.matchedSegmentIndex);
+        scrollToSegment(evaluation.matchedSegmentIndex);
+      }
+
+      // Restore status badge to listening after brief matching indicator
+      setTimeout(() => {
+        setSpeechStatus((prev) => (prev === 'matching' ? 'listening' : prev));
+      }, 260);
+    },
+    [scrollToSegment]
+  );
+
+  // Instantiate singleton SpeechRecognitionController once on mount (4.1 再描画で再起動しない)
+  useEffect(() => {
+    const controller = new SpeechRecognitionController({
+      onStatusChange: (status) => setSpeechStatus(status),
+      onTranscript: (ev) => processRecognizedSpeech(ev),
+      onVolumeChange: (rms) => setMicVolumeLevel(rms),
+      onError: (err) => {
+        setSpeechError(err);
+        if (err) {
+          setIsPlaying(false);
+        }
+      },
+    });
+    speechControllerRef.current = controller;
+
+    return () => {
+      controller.destroy();
+      speechControllerRef.current = null;
+      if (smoothScrollRafRef.current) {
+        cancelAnimationFrame(smoothScrollRafRef.current);
+      }
+    };
+  }, [processRecognizedSpeech]);
+
+  // Keep language synchronized without recreating the controller
+  useEffect(() => {
+    speechControllerRef.current?.setLanguage(script.language);
+  }, [script.language]);
+
+  // Monitor online/offline status & auto-switch to manual mode if offline (Section 9)
+  useEffect(() => {
+    const updateOnlineState = () => {
+      const offline = !navigator.onLine;
+      setIsOffline(offline);
+      if (offline && scrollMode === 'voice') {
+        speechControllerRef.current?.stop();
+        setIsPlaying(false);
+        setScrollMode('manual');
+      }
+    };
+    updateOnlineState();
+    window.addEventListener('online', updateOnlineState);
+    window.addEventListener('offline', updateOnlineState);
+    return () => {
+      window.removeEventListener('online', updateOnlineState);
+      window.removeEventListener('offline', updateOnlineState);
+    };
+  }, [scrollMode]);
+
+  // Start / Stop SpeechRecognitionController when play state or scrollMode changes
+  useEffect(() => {
+    const controller = speechControllerRef.current;
+    if (!controller) return;
+
+    if (isPlaying && scrollMode === 'voice') {
+      controller.start(script.language);
+    } else {
+      controller.stop();
+      if (!isPlaying) {
+        setSpeechStatus((prev) => (prev === 'error' ? 'error' : 'paused'));
+      } else {
+        setSpeechStatus('idle');
+      }
+    }
+  }, [isPlaying, scrollMode, script.language]);
 
   // Auto-hide controls during active playback for distraction-free recording
   const resetControlsIdleTimer = useCallback(() => {
@@ -119,12 +322,12 @@ export function TeleprompterStage({
     if (hideControlsTimerRef.current) {
       clearTimeout(hideControlsTimerRef.current);
     }
-    if (isPlaying) {
+    if (isPlaying && !speechError) {
       hideControlsTimerRef.current = setTimeout(() => {
         setControlsVisible(false);
-      }, 3200);
+      }, 3400);
     }
-  }, [isPlaying]);
+  }, [isPlaying, speechError]);
 
   useEffect(() => {
     resetControlsIdleTimer();
@@ -134,37 +337,6 @@ export function TeleprompterStage({
       }
     };
   }, [isPlaying, resetControlsIdleTimer]);
-
-  // Scroll a specific segment smoothly to the reading guide line
-  const scrollToSegment = useCallback(
-    (index: number, behavior: ScrollBehavior = 'smooth') => {
-      const container = scrollContainerRef.current;
-      const targetEl = segmentRefs.current[index];
-      if (!container || !targetEl) return;
-
-      const containerHeight = container.clientHeight;
-      const readingAnchorPx =
-        (settings.readingLinePositionVh / 100) * containerHeight;
-
-      const targetOffsetTop = targetEl.offsetTop;
-      const targetHeight = targetEl.offsetHeight;
-      const desiredScrollTop = Math.max(
-        0,
-        targetOffsetTop - readingAnchorPx + targetHeight * 0.35
-      );
-
-      programmaticScrollRef.current = true;
-      container.scrollTo({
-        top: desiredScrollTop,
-        behavior,
-      });
-
-      setTimeout(() => {
-        programmaticScrollRef.current = false;
-      }, settings.scrollAnimationMs + 60);
-    },
-    [settings.readingLinePositionVh, settings.scrollAnimationMs]
-  );
 
   // Compute which segment is closest to the reading guide line when scrolling manually or at constant speed
   const updateActiveSegmentFromScroll = useCallback(() => {
@@ -235,12 +407,10 @@ export function TeleprompterStage({
   // Navigation Handlers
   const handleResetToTop = useCallback(() => {
     setIsPlaying(false);
+    activeIndexRef.current = 0;
     setActiveSegmentIndex(0);
-    const container = scrollContainerRef.current;
-    if (container) {
-      container.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-  }, []);
+    animateScrollToTarget(0);
+  }, [animateScrollToTarget]);
 
   const handleJumpParagraph = useCallback(
     (direction: 'prev' | 'next') => {
@@ -256,18 +426,15 @@ export function TeleprompterStage({
         const targetIdx = nextSeg
           ? nextSeg.index
           : Math.min(segments.length - 1, activeSegmentIndex + 1);
+        activeIndexRef.current = targetIdx;
         setActiveSegmentIndex(targetIdx);
-        scrollToSegment(targetIdx, 'smooth');
+        scrollToSegment(targetIdx);
       } else {
-        // Find start of previous paragraph
         let targetParagraph = Math.max(0, currentParagraph - 1);
         const firstInCurrent = segments.find(
           (s) => s.paragraphIndex === currentParagraph
         );
-        if (
-          firstInCurrent &&
-          activeSegmentIndex > firstInCurrent.index
-        ) {
+        if (firstInCurrent && activeSegmentIndex > firstInCurrent.index) {
           targetParagraph = currentParagraph;
         }
         const prevSeg = segments.find(
@@ -276,8 +443,9 @@ export function TeleprompterStage({
         const targetIdx = prevSeg
           ? prevSeg.index
           : Math.max(0, activeSegmentIndex - 1);
+        activeIndexRef.current = targetIdx;
         setActiveSegmentIndex(targetIdx);
-        scrollToSegment(targetIdx, 'smooth');
+        scrollToSegment(targetIdx);
       }
     },
     [activeSegmentIndex, scrollToSegment, segments]
@@ -301,8 +469,12 @@ export function TeleprompterStage({
   // Keyboard shortcuts during Teleprompter Stage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if modal dialog is open
-      if (document.querySelector('dialog[open]')) return;
+      if (
+        document.querySelector('dialog[open]') ||
+        document.activeElement?.tagName === 'INPUT'
+      ) {
+        return;
+      }
 
       if (e.code === 'Space') {
         e.preventDefault();
@@ -310,13 +482,15 @@ export function TeleprompterStage({
       } else if (e.code === 'ArrowDown' || e.code === 'ArrowRight') {
         e.preventDefault();
         const nextIdx = Math.min(segments.length - 1, activeSegmentIndex + 1);
+        activeIndexRef.current = nextIdx;
         setActiveSegmentIndex(nextIdx);
-        scrollToSegment(nextIdx, 'smooth');
+        scrollToSegment(nextIdx);
       } else if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') {
         e.preventDefault();
         const prevIdx = Math.max(0, activeSegmentIndex - 1);
+        activeIndexRef.current = prevIdx;
         setActiveSegmentIndex(prevIdx);
-        scrollToSegment(prevIdx, 'smooth');
+        scrollToSegment(prevIdx);
       } else if (e.code === 'Home') {
         e.preventDefault();
         handleResetToTop();
@@ -329,7 +503,6 @@ export function TeleprompterStage({
 
   const statusMeta = STATUS_LABELS[speechStatus];
 
-  // Mirror transform style
   const mirrorTransform = [
     settings.mirrorHorizontal ? 'scaleX(-1)' : '',
     settings.mirrorVertical ? 'scaleY(-1)' : '',
@@ -346,7 +519,7 @@ export function TeleprompterStage({
     >
       {/* Top Status & Quick Action Bar */}
       <header
-        className={`fixed top-0 right-0 left-0 z-30 flex items-center justify-between border-b border-white/10 bg-black/65 px-5 py-3 backdrop-blur-md transition-opacity duration-300 ${
+        className={`fixed top-0 right-0 left-0 z-30 flex items-center justify-between border-b border-white/10 bg-black/70 px-4 py-3 backdrop-blur-md transition-opacity duration-300 sm:px-6 ${
           controlsVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
         }`}
       >
@@ -354,10 +527,10 @@ export function TeleprompterStage({
           <button
             type="button"
             onClick={onExitStage}
-            className="flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/90 px-3.5 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800 hover:text-white"
+            className="flex min-h-[42px] items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/90 px-3.5 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800 hover:text-white"
           >
             <ArrowLeft className="h-4 w-4" />
-            編集へ戻る
+            <span>編集へ戻る</span>
           </button>
 
           <div className="hidden sm:block">
@@ -370,20 +543,40 @@ export function TeleprompterStage({
           </div>
         </div>
 
-        {/* Center Status Indicator Badge (Section 8) */}
-        <div className="flex items-center gap-2">
+        {/* Center Status Indicator Badge & Mic Level Meter (Section 8) */}
+        <div className="flex items-center gap-2.5">
+          {isOffline && (
+            <div className="flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/15 px-3 py-1 text-[11px] font-medium text-amber-300">
+              <WifiOff className="h-3.5 w-3.5" />
+              <span>オフライン（手動モード動作中）</span>
+            </div>
+          )}
+
           <div
-            className={`flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-medium shadow-sm ${statusMeta.badgeClass}`}
+            className={`flex items-center gap-2.5 rounded-full border px-3.5 py-1.5 text-xs font-medium shadow-sm ${statusMeta.badgeClass}`}
           >
             <span className={`h-2 w-2 rounded-full ${statusMeta.dotClass}`} />
-            <span>状態: {statusMeta.label}</span>
+            <span>{statusMeta.label}</span>
+
+            {/* Real-time Microphone Input Level Bar */}
+            {scrollMode === 'voice' && isPlaying && (
+              <div
+                className="flex h-3 w-12 items-center overflow-hidden rounded-full bg-zinc-800 p-0.5"
+                title="マイク入力レベル"
+              >
+                <div
+                  style={{ width: `${Math.max(8, Math.round(micVolumeLevel * 100))}%` }}
+                  className="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400 transition-all duration-75"
+                />
+              </div>
+            )}
           </div>
         </div>
 
         {/* Right Quick Toggles */}
         <div className="flex items-center gap-2">
           {/* Font Size Quick Stepper */}
-          <div className="hidden items-center rounded-xl border border-zinc-800 bg-zinc-900/90 p-1 md:flex">
+          <div className="hidden items-center rounded-xl border border-zinc-800 bg-zinc-900/90 p-1 lg:flex">
             <button
               type="button"
               onClick={() =>
@@ -420,7 +613,7 @@ export function TeleprompterStage({
                 cameraEyelineMode: !settings.cameraEyelineMode,
               })
             }
-            className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
+            className={`flex min-h-[42px] items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
               settings.cameraEyelineMode
                 ? 'border-sky-500/60 bg-sky-500/20 text-sky-300'
                 : 'border-zinc-800 bg-zinc-900/90 text-zinc-400 hover:text-zinc-200'
@@ -428,7 +621,7 @@ export function TeleprompterStage({
             title="カメラ目線モード切替"
           >
             <Camera className="h-4 w-4" />
-            <span className="hidden lg:inline">カメラ目線</span>
+            <span className="hidden xl:inline">カメラ目線</span>
           </button>
 
           <button
@@ -436,7 +629,7 @@ export function TeleprompterStage({
             onClick={() =>
               onUpdateSettings({ focusMode: !settings.focusMode })
             }
-            className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
+            className={`flex min-h-[42px] items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
               settings.focusMode
                 ? 'border-sky-500/60 bg-sky-500/20 text-sky-300'
                 : 'border-zinc-800 bg-zinc-900/90 text-zinc-400 hover:text-zinc-200'
@@ -444,13 +637,31 @@ export function TeleprompterStage({
             title="フォーカスモード切替"
           >
             <Eye className="h-4 w-4" />
-            <span className="hidden lg:inline">フォーカス</span>
+            <span className="hidden xl:inline">フォーカス</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateSettings({
+                showDebugOverlay: !settings.showDebugOverlay,
+              })
+            }
+            className={`flex min-h-[42px] items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
+              settings.showDebugOverlay
+                ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300'
+                : 'border-zinc-800 bg-zinc-900/90 text-zinc-400 hover:text-zinc-200'
+            }`}
+            title="音声認識デバッグ表示切替"
+          >
+            <Bug className="h-4 w-4" />
+            <span className="hidden xl:inline">デバッグ</span>
           </button>
 
           <button
             type="button"
             onClick={handleToggleFullscreen}
-            className="rounded-xl border border-zinc-800 bg-zinc-900/90 p-2 text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+            className="min-h-[42px] rounded-xl border border-zinc-800 bg-zinc-900/90 p-2.5 text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
             title="全画面表示切替"
           >
             {isFullscreen ? (
@@ -463,13 +674,86 @@ export function TeleprompterStage({
           <button
             type="button"
             onClick={onOpenSettings}
-            className="rounded-xl border border-zinc-800 bg-zinc-900/90 p-2 text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+            className="min-h-[42px] rounded-xl border border-zinc-800 bg-zinc-900/90 p-2.5 text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
             title="設定画面を開く"
           >
             <Sliders className="h-4 w-4" />
           </button>
         </div>
       </header>
+
+      {/* Microphone Permission / Error Recovery Guide Banner (Section 8 & 12) */}
+      {speechError && (
+        <div className="fixed top-20 right-4 left-4 z-40 mx-auto max-w-2xl rounded-2xl border border-red-500/40 bg-zinc-950/95 p-5 text-zinc-100 shadow-2xl backdrop-blur-xl">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-red-500/20 p-2 text-red-400">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-red-300">
+                  {speechError.title}
+                </h3>
+                <p className="mt-1 text-xs text-zinc-300">
+                  {speechError.message}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSpeechError(null)}
+              className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-900/80 p-3.5">
+            <p className="mb-2 text-xs font-semibold text-zinc-200">
+              解決方法・復旧ステップ：
+            </p>
+            <ul className="list-inside list-decimal space-y-1.5 text-xs text-zinc-300">
+              {speechError.recoverySteps.map((step, i) => (
+                <li key={i}>{step}</li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-2.5">
+            <button
+              type="button"
+              onClick={() => {
+                setSpeechError(null);
+                setScrollMode('constant');
+                setIsPlaying(true);
+              }}
+              className="rounded-xl border border-zinc-700 bg-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-100 transition hover:bg-zinc-700"
+            >
+              一定速度スクロールで撮影を続行
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSpeechError(null);
+                setScrollMode('manual');
+              }}
+              className="rounded-xl border border-zinc-700 bg-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-100 transition hover:bg-zinc-700"
+            >
+              手動モードへ切替
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSpeechError(null);
+                setIsPlaying(true);
+              }}
+              className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-white transition hover:bg-sky-400"
+            >
+              音声認識を再試行
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Prompter Stage Container (supports Camera Eyeline Mode) */}
       <div
@@ -484,7 +768,7 @@ export function TeleprompterStage({
         }}
         className={`relative mx-auto w-full transition-all duration-300 ${
           settings.cameraEyelineMode
-            ? ' rounded-b-3xl border-b border-white/10 shadow-2xl'
+            ? 'rounded-b-3xl border-b border-white/15 shadow-2xl'
             : ''
         }`}
       >
@@ -510,11 +794,11 @@ export function TeleprompterStage({
           }}
           style={{
             paddingTop: `${settings.marginVerticalVh}vh`,
-            paddingBottom: `${Math.max(45, settings.marginVerticalVh)}vh`,
+            paddingBottom: `${Math.max(48, settings.marginVerticalVh)}vh`,
             paddingLeft: `${settings.marginHorizontalPx}px`,
             paddingRight: `${settings.marginHorizontalPx}px`,
           }}
-          className="h-full w-full overflow-y-auto scroll-smooth"
+          className="h-full w-full overflow-y-auto"
         >
           <div
             style={{
@@ -545,15 +829,16 @@ export function TeleprompterStage({
                     segmentRefs.current[idx] = el;
                   }}
                   onClick={() => {
+                    activeIndexRef.current = idx;
                     setActiveSegmentIndex(idx);
-                    scrollToSegment(idx, 'smooth');
+                    scrollToSegment(idx);
                   }}
                   style={{ opacity }}
-                  className={`cursor-pointer rounded-2xl px-4 py-2 transition-all duration-200 ${
+                  className={`cursor-pointer rounded-2xl px-4 py-2 transition-opacity duration-200 ${
                     isNewParagraph ? 'mt-10' : ''
                   } ${
                     isCurrent
-                      ? 'scale-[1.01] bg-white/[0.04] ring-1 ring-white/10'
+                      ? 'bg-white/[0.04] ring-1 ring-sky-400/25'
                       : 'hover:opacity-75'
                   }`}
                 >
@@ -565,7 +850,71 @@ export function TeleprompterStage({
         </div>
       </div>
 
-      {/* Bottom Floating Recording Control Dock (Section 7) */}
+      {/* Speech Recognition Live Debug Overlay & Simulator (Section 8 & Phase 2/3) */}
+      {settings.showDebugOverlay && (
+        <aside className="fixed right-4 bottom-24 z-30 w-full max-w-md rounded-2xl border border-white/15 bg-zinc-950/90 p-3.5 text-xs text-zinc-200 shadow-2xl backdrop-blur-xl">
+          <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+            <div className="flex items-center gap-1.5 font-semibold text-emerald-400">
+              <Bug className="h-3.5 w-3.5" />
+              <span>リアルタイム音声認識・照合デバッグ</span>
+            </div>
+            <span className="font-mono text-[10px] text-zinc-400">
+              {script.language} | 感度 {Math.round(settings.trackingSensitivity * 100)}%
+            </span>
+          </div>
+
+          <div className="mt-2.5 space-y-2">
+            <div className="rounded-xl bg-zinc-900/90 px-3 py-2">
+              <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                <span>最新認識テキスト ({isInterimTranscript ? '途中結果 interim' : '確定 final'})</span>
+                {lastMatchResult && (
+                  <span className="font-mono text-sky-400">
+                    類似度: {Math.round(lastMatchResult.similarityScore * 100)}% (
+                    {lastMatchResult.reason})
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 truncate font-medium text-white">
+                {latestTranscript || '（マイクに向かって原稿を読み上げてください）'}
+              </p>
+            </div>
+
+            {/* Interactive Utterance Simulator for testing matching without speaking */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!simulationInput.trim()) return;
+                processRecognizedSpeech({
+                  transcript: simulationInput.trim(),
+                  isFinal: true,
+                  resultIndex: Date.now(),
+                  confidence: 0.95,
+                  timestamp: Date.now(),
+                });
+                setSimulationInput('');
+              }}
+              className="flex items-center gap-1.5"
+            >
+              <input
+                type="text"
+                value={simulationInput}
+                onChange={(e) => setSimulationInput(e.target.value)}
+                placeholder="発話シミュレート入力（テスト用）..."
+                className="flex-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 focus:border-sky-500 focus:outline-none"
+              />
+              <button
+                type="submit"
+                className=" flex items-center gap-1 rounded-lg bg-zinc-800 px-2.5 py-1.5 text-[11px] font-semibold text-sky-300 transition hover:bg-zinc-700"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                照合テスト
+              </button>
+            </form>
+          </div>
+        </aside>
+      )}
+
+      {/* Bottom Floating Recording Control Dock (Section 7: Large touch-friendly controls) */}
       <footer
         className={`fixed right-0 bottom-5 left-0 z-30 mx-auto flex max-w-4xl flex-wrap items-center justify-center gap-3 px-4 transition-opacity duration-300 ${
           controlsVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
@@ -577,7 +926,7 @@ export function TeleprompterStage({
             <button
               type="button"
               onClick={() => setScrollMode('voice')}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition ${
+              className={`flex min-h-[42px] items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
                 scrollMode === 'voice'
                   ? 'bg-sky-500 text-white shadow'
                   : 'text-zinc-400 hover:text-zinc-200'
@@ -590,7 +939,7 @@ export function TeleprompterStage({
             <button
               type="button"
               onClick={() => setScrollMode('constant')}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition ${
+              className={`flex min-h-[42px] items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
                 scrollMode === 'constant'
                   ? 'bg-sky-500 text-white shadow'
                   : 'text-zinc-400 hover:text-zinc-200'
@@ -606,7 +955,7 @@ export function TeleprompterStage({
                 setScrollMode('manual');
                 setIsPlaying(false);
               }}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition ${
+              className={`flex min-h-[42px] items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
                 scrollMode === 'manual'
                   ? 'bg-sky-500 text-white shadow'
                   : 'text-zinc-400 hover:text-zinc-200'
@@ -624,7 +973,7 @@ export function TeleprompterStage({
           <button
             type="button"
             onClick={handleResetToTop}
-            className="flex items-center gap-1 rounded-xl bg-zinc-900 px-3 py-2.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800"
+            className="flex min-h-[44px] items-center gap-1 rounded-xl bg-zinc-900 px-3.5 py-2.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800 active:scale-95"
             title="原稿先頭へ戻る (Home)"
           >
             <RotateCcw className="h-4 w-4" />
@@ -634,7 +983,7 @@ export function TeleprompterStage({
           <button
             type="button"
             onClick={() => handleJumpParagraph('prev')}
-            className="flex items-center gap-1 rounded-xl bg-zinc-900 px-3 py-2.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800"
+            className="flex min-h-[44px] items-center gap-1 rounded-xl bg-zinc-900 px-3.5 py-2.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800 active:scale-95"
             title="前の段落へ移動"
           >
             <SkipBack className="h-4 w-4" />
@@ -645,7 +994,7 @@ export function TeleprompterStage({
           <button
             type="button"
             onClick={() => setIsPlaying((prev) => !prev)}
-            className={`flex min-w-[130px] items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold text-white shadow-lg transition active:scale-95 ${
+            className={`flex min-h-[44px] min-w-[144px] items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold text-white shadow-lg transition active:scale-95 ${
               isPlaying
                 ? 'bg-amber-500 text-black hover:bg-amber-400'
                 : 'bg-sky-500 hover:bg-sky-400'
@@ -654,12 +1003,14 @@ export function TeleprompterStage({
             {isPlaying ? (
               <>
                 <Pause className="h-4 w-4 fill-current" />
-                一時停止
+                <span>一時停止</span>
               </>
             ) : (
               <>
                 <Play className="h-4 w-4 fill-current" />
-                {scrollMode === 'voice' ? '音声認識開始' : 'スクロール開始'}
+                <span>
+                  {scrollMode === 'voice' ? '音声認識開始' : '再開 / 開始'}
+                </span>
               </>
             )}
           </button>
@@ -667,7 +1018,7 @@ export function TeleprompterStage({
           <button
             type="button"
             onClick={() => handleJumpParagraph('next')}
-            className="flex items-center gap-1 rounded-xl bg-zinc-900 px-3 py-2.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800"
+            className="flex min-h-[44px] items-center gap-1 rounded-xl bg-zinc-900 px-3.5 py-2.5 text-xs font-medium text-zinc-200 transition hover:bg-zinc-800 active:scale-95"
             title="次の段落へ移動"
           >
             <span className="hidden sm:inline">次段落</span>

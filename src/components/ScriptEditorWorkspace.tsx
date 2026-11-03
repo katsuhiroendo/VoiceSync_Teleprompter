@@ -14,6 +14,7 @@ import {
   Sliders,
   Check,
   Globe,
+  Cloud,
 } from 'lucide-react';
 
 interface ScriptEditorWorkspaceProps {
@@ -27,6 +28,7 @@ interface ScriptEditorWorkspaceProps {
   onImportScriptFile: (title: string, content: string) => void;
   onStartTeleprompter: () => void;
   onOpenSettings: () => void;
+  onOpenSync: () => void;
 }
 
 export function ScriptEditorWorkspace({
@@ -40,6 +42,7 @@ export function ScriptEditorWorkspace({
   onImportScriptFile,
   onStartTeleprompter,
   onOpenSettings,
+  onOpenSync,
 }: ScriptEditorWorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [saveIndicator, setSaveIndicator] = useState<'saved' | 'saving'>('saved');
@@ -145,6 +148,14 @@ export function ScriptEditorWorkspace({
           </div>
 
           <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onOpenSync}
+              className="rounded-xl border border-zinc-800 bg-zinc-900 p-2 text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+              title="MacBook / iPad 原稿同期・バックアップ"
+            >
+              <Cloud className="h-4 w-4 text-sky-400" />
+            </button>
             <button
               type="button"
               onClick={onOpenSettings}
