@@ -7,6 +7,8 @@ import {
   ScrollMode,
   SpeechStatus,
   RecordingSessionMeta,
+  NGMarkerItem,
+  NGMarkerType,
 } from '@/types/prompter';
 import {
    parseScriptToSegments,
@@ -45,6 +47,15 @@ import {
   CountdownDisplayStep,
 } from '@/lib/countdownHelper';
 import {
+  NG_MARKER_TYPE_LABELS,
+  RetakeTargetAction,
+  computeElapsedVideoSeconds,
+  createNGMarkerItem,
+  resolveRetakeSegmentIndex,
+  serializeMarkersToCSV,
+  serializeMarkersToJSON,
+} from '@/lib/ngMarkerService';
+import {
   Play,
   Pause,
   RotateCcw,
@@ -75,6 +86,7 @@ import {
   Smartphone,
   HardDrive,
   Trash2,
+  Flag,
 } from 'lucide-react';
 
 interface TeleprompterStageProps {
@@ -193,6 +205,13 @@ export function TeleprompterStage({
     useState<CountdownDisplayStep>(null);
   const [isWaitingPostRecordSilence, setIsWaitingPostRecordSilence] =
     useState<boolean>(false);
+  // Phase 3: NG & Retake Markers states
+  const [sessionMarkers, setSessionMarkers] = useState<NGMarkerItem[]>([]);
+  const [isRetakeMenuOpen, setIsRetakeMenuOpen] = useState<boolean>(false);
+  const [lastMarkerToast, setLastMarkerToast] = useState<NGMarkerItem | null>(
+    null
+  );
+  const [customMarkerNote, setCustomMarkerNote] = useState<string>('');
 
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -212,6 +231,7 @@ export function TeleprompterStage({
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
   const backdropVideoRef = useRef<HTMLVideoElement | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const segmentRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -329,6 +349,32 @@ export function TeleprompterStage({
   const lastAdvanceResultIndexRef = useRef<number>(-1);
   const lastAdvancedFromIndexRef = useRef<number | null>(null);
   const lastAdvanceTimestampRef = useRef<number>(0);
+  const latestSpokenNormLenRef = useRef<number>(0);
+  const latestResultIndexRef = useRef<number>(-1);
+
+  /**
+   * Section 5.4: 原稿位置を手動・撮り直しで移動した際、見かけのスクロール位置と
+   * 音声追従エンジンの内部照合位置（および累積バッファオフセット）を完全に同期する。
+   */
+  const syncActiveSegmentPosition = useCallback(
+    (targetIdx: number) => {
+      const clampedIdx = Math.max(
+        0,
+        Math.min(Math.max(0, segmentsRef.current.length - 1), targetIdx)
+      );
+      activeIndexRef.current = clampedIdx;
+      setActiveSegmentIndex(clampedIdx);
+      scrollToSegment(clampedIdx);
+
+      // Synchronize internal speech matcher state so prior spoken words in the current utterance buffer
+      // do not immediately jump forward to the old position.
+      lastAdvancedFromIndexRef.current = null;
+      lastAdvanceTimestampRef.current = Date.now();
+      lastAdvanceResultIndexRef.current = latestResultIndexRef.current;
+      lastAdvanceSpokenLengthRef.current = latestSpokenNormLenRef.current;
+    },
+    [scrollToSegment]
+  );
 
   // Process recognized speech (from microphone or debug simulator) and match against script
   const processRecognizedSpeech = useCallback(
@@ -349,6 +395,8 @@ export function TeleprompterStage({
 
       // Normalize first so kanji conversion changes on the prefix do not break length-based slicing
       const fullSpokenNorm = normalizeTextForMatching(event.transcript);
+      latestResultIndexRef.current = event.resultIndex;
+      latestSpokenNormLenRef.current = fullSpokenNorm.length;
 
       // Chrome's continuous SpeechRecognition in Japanese often keeps appending to a single buffer
       // ("皆さんこんにちは 今日も動画をご覧いただき... 今回の動画では...").
@@ -808,6 +856,7 @@ export function TeleprompterStage({
           createdAt: session.startedAt,
         });
         setActiveSessionMeta(session);
+        setSessionMarkers(session.markers || []);
         setRecoverableSessions((prev) =>
           prev.filter((s) => s.sessionId !== session.sessionId)
         );
@@ -964,6 +1013,7 @@ export function TeleprompterStage({
       await sessionWriter.initializeSession();
       sessionWriterRef.current = sessionWriter;
       setActiveSessionMeta(sessionWriter.getMeta());
+      setSessionMarkers([]);
 
       try {
         const recorder = mimeType
@@ -1302,13 +1352,11 @@ export function TeleprompterStage({
     updateActiveSegmentFromScroll,
   ]);
 
-  // Navigation Handlers
+  // Navigation Handlers (all synchronize internal speech matcher position per Section 5.4)
   const handleResetToTop = useCallback(() => {
     setIsPlaying(false);
-    activeIndexRef.current = 0;
-    setActiveSegmentIndex(0);
-    scrollToSegment(0);
-  }, [scrollToSegment]);
+    syncActiveSegmentPosition(0);
+  }, [syncActiveSegmentPosition]);
 
   const handleJumpParagraph = useCallback(
     (direction: 'prev' | 'next') => {
@@ -1324,9 +1372,7 @@ export function TeleprompterStage({
         const targetIdx = nextSeg
           ? nextSeg.index
           : Math.min(segments.length - 1, activeSegmentIndex + 1);
-        activeIndexRef.current = targetIdx;
-        setActiveSegmentIndex(targetIdx);
-        scrollToSegment(targetIdx);
+        syncActiveSegmentPosition(targetIdx);
       } else {
         let targetParagraph = Math.max(0, currentParagraph - 1);
         const firstInCurrent = segments.find(
@@ -1341,12 +1387,88 @@ export function TeleprompterStage({
         const targetIdx = prevSeg
           ? prevSeg.index
           : Math.max(0, activeSegmentIndex - 1);
-        activeIndexRef.current = targetIdx;
-        setActiveSegmentIndex(targetIdx);
-        scrollToSegment(targetIdx);
+        syncActiveSegmentPosition(targetIdx);
       }
     },
-    [activeSegmentIndex, scrollToSegment, segments]
+    [activeSegmentIndex, segments, syncActiveSegmentPosition]
+  );
+
+  // Phase 3 (Section 5.2 & 5.3): Record an NG / Retake / Edit Note marker
+  const handleRecordNGMarker = useCallback(
+    (type: NGMarkerType = 'ng', customNote?: string) => {
+      const elapsedSec =
+        cameraStatus === 'recording' && recordingStartMsRef.current > 0
+          ? computeElapsedVideoSeconds(recordingStartMsRef.current, Date.now())
+          : recordingSeconds;
+
+      const currentIdx = activeIndexRef.current;
+      const currentSeg = segmentsRef.current[currentIdx];
+      const sessionId =
+        sessionWriterRef.current?.getSessionId() ||
+        activeSessionMeta?.sessionId ||
+        `session-${Date.now()}`;
+
+      const marker = createNGMarkerItem({
+        sessionId,
+        elapsedSeconds: elapsedSec,
+        scriptId: script.id,
+        segment: currentSeg,
+        activeSegmentIndex: currentIdx,
+        type,
+        note: customNote,
+      });
+
+      setSessionMarkers((prev) => {
+        const next = [...prev, marker];
+        sessionWriterRef.current?.updateMarkers(next);
+        return next;
+      });
+
+      setLastMarkerToast(marker);
+      setIsRetakeMenuOpen(true);
+    },
+    [activeSessionMeta?.sessionId, cameraStatus, recordingSeconds, script.id]
+  );
+
+  // Phase 3 (Section 5.4): Retake quick reposition with full internal speech matcher sync
+  const handleRetakeJump = useCallback(
+    (action: RetakeTargetAction) => {
+      const targetIdx = resolveRetakeSegmentIndex(
+        segmentsRef.current,
+        activeIndexRef.current,
+        action
+      );
+      syncActiveSegmentPosition(targetIdx);
+    },
+    [syncActiveSegmentPosition]
+  );
+
+  // Phase 3 (Section 5.5): Export markers as CSV or JSON
+  const handleExportMarkers = useCallback(
+    (format: 'csv' | 'json') => {
+      if (sessionMarkers.length === 0) return;
+      const content =
+        format === 'csv'
+          ? serializeMarkersToCSV(sessionMarkers)
+          : serializeMarkersToJSON(sessionMarkers);
+      const mime =
+        format === 'csv'
+          ? 'text/csv;charset=utf-8;'
+          : 'application/json;charset=utf-8;';
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const safeTitle =
+        script.title.trim().replace(/[\\/:*?"<>|]/g, '_') || 'voicesync';
+      const dateStr = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${safeTitle}_markers_${dateStr}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    },
+    [script.title, sessionMarkers]
   );
 
   // Fullscreen toggle
@@ -1383,18 +1505,17 @@ export function TeleprompterStage({
       if (e.code === 'Space') {
         e.preventDefault();
         setIsPlaying((prev) => !prev);
+      } else if (e.code === 'KeyM' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        handleRecordNGMarker('ng');
       } else if (e.code === 'ArrowDown' || e.code === 'ArrowRight') {
         e.preventDefault();
         const nextIdx = Math.min(segments.length - 1, activeSegmentIndex + 1);
-        activeIndexRef.current = nextIdx;
-        setActiveSegmentIndex(nextIdx);
-        scrollToSegment(nextIdx);
+        syncActiveSegmentPosition(nextIdx);
       } else if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') {
         e.preventDefault();
         const prevIdx = Math.max(0, activeSegmentIndex - 1);
-        activeIndexRef.current = prevIdx;
-        setActiveSegmentIndex(prevIdx);
-        scrollToSegment(prevIdx);
+        syncActiveSegmentPosition(prevIdx);
       } else if (e.code === 'Home') {
         e.preventDefault();
         handleResetToTop();
@@ -1407,9 +1528,10 @@ export function TeleprompterStage({
     activeSegmentIndex,
     countdownStep,
     handleCancelCountdown,
+    handleRecordNGMarker,
     handleResetToTop,
-    scrollToSegment,
     segments.length,
+    syncActiveSegmentPosition,
   ]);
 
   const statusMeta = STATUS_LABELS[speechStatus];
@@ -1890,9 +2012,9 @@ export function TeleprompterStage({
         </div>
       )}
 
-      {/* Recorded Video Instant Preview & Download Banner */}
+      {/* Recorded Video Instant Preview, NG Marker Seek List & Download Banner (Phase 3 & Phase 6) */}
       {recordedClip && cameraStatus !== 'recording' && (
-        <div className="fixed top-16 left-4 z-40 w-80 rounded-2xl border border-white/15 bg-zinc-950/95 p-3.5 text-xs text-zinc-100 shadow-2xl backdrop-blur-xl">
+        <div className="fixed top-16 left-4 z-40 w-80 sm:w-96 rounded-2xl border border-white/15 bg-zinc-950/95 p-3.5 text-xs text-zinc-100 shadow-2xl backdrop-blur-xl">
           <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
             <span className="font-semibold text-emerald-400">
               カメラ録画が完了しました ({formatDurationTimer(recordedClip.durationSec)})
@@ -1910,11 +2032,77 @@ export function TeleprompterStage({
             </button>
           </div>
           <video
+            ref={previewVideoRef}
             src={recordedClip.url}
             controls
             playsInline
             className="mt-2.5 aspect-video w-full rounded-xl bg-black object-cover"
           />
+
+          {/* Phase 3 (Section 5.5): Post-Recording NG & Retake Marker List with Click-to-Seek */}
+          {sessionMarkers.length > 0 && (
+            <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-900/80 p-2.5">
+              <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5">
+                <span className="flex items-center gap-1 font-semibold text-amber-300">
+                  <Flag className="h-3.5 w-3.5" />
+                  <span>NG・編集マーカー ({sessionMarkers.length}件)</span>
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleExportMarkers('csv')}
+                    className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-semibold text-sky-300 transition hover:bg-zinc-700"
+                    title="CSV形式で書き出し"
+                  >
+                    CSV出力
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExportMarkers('json')}
+                    className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-semibold text-sky-300 transition hover:bg-zinc-700"
+                    title="JSON形式で書き出し"
+                  >
+                    JSON出力
+                  </button>
+                </div>
+              </div>
+              <div className="mt-1.5 max-h-36 space-y-1 overflow-y-auto pr-1">
+                {sessionMarkers.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => {
+                      if (previewVideoRef.current) {
+                        previewVideoRef.current.currentTime = m.elapsedSeconds;
+                        previewVideoRef.current.play().catch(() => {});
+                      }
+                      syncActiveSegmentPosition(m.segmentIndex);
+                    }}
+                    className="flex w-full items-start justify-between gap-2 rounded-lg border border-zinc-800/80 bg-zinc-950/80 px-2.5 py-1.5 text-left transition hover:border-amber-500/40 hover:bg-zinc-800/70"
+                    title="クリックしてこの動画位置へジャンプ"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-[10px] font-bold text-amber-400">
+                          {m.timecode}
+                        </span>
+                        <span className="rounded bg-amber-500/20 px-1.5 py-0.2 text-[9px] font-semibold text-amber-200">
+                          {NG_MARKER_TYPE_LABELS[m.type]}
+                        </span>
+                        <span className="text-[10px] text-zinc-400">
+                          #{m.segmentIndex + 1}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 truncate text-[10px] text-zinc-300">
+                        {m.segmentText || m.note}
+                      </p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="mt-3 flex items-center gap-2">
             <button
               type="button"
@@ -2150,9 +2338,7 @@ export function TeleprompterStage({
                     segmentRefs.current[idx] = el;
                   }}
                   onClick={() => {
-                    activeIndexRef.current = idx;
-                    setActiveSegmentIndex(idx);
-                    scrollToSegment(idx);
+                    syncActiveSegmentPosition(idx);
                   }}
                   style={{ opacity }}
                   className={`cursor-pointer rounded-2xl px-4 py-2 transition-opacity duration-200 ${
@@ -2384,6 +2570,163 @@ export function TeleprompterStage({
               </span>
             </button>
           )}
+
+          {/* Phase 3 (Section 5.3 & 5.4): NG / Retake Marker Button & Retake Assist Popover */}
+          <div className="relative flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => handleRecordNGMarker('ng')}
+              className="flex min-h-[44px] items-center gap-1.5 rounded-xl border border-amber-500/50 bg-amber-500/15 px-3.5 py-2.5 text-xs font-bold text-amber-200 transition hover:bg-amber-500/25 active:scale-95"
+              title="言い間違い・撮り直し位置にNGマーカーを記録 (ショートカット: Mキー)"
+            >
+              <Flag className="h-3.5 w-3.5 text-amber-400" />
+              <span>NG記録</span>
+              {sessionMarkers.length > 0 && (
+                <span className="rounded-full bg-amber-500 px-1.5 py-0.2 text-[10px] font-black text-black">
+                  {sessionMarkers.length}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsRetakeMenuOpen((prev) => !prev)}
+              className={`min-h-[44px] rounded-xl border px-2.5 py-2.5 text-xs font-semibold transition ${
+                isRetakeMenuOpen
+                  ? 'border-amber-400 bg-amber-500/25 text-amber-200'
+                  : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
+              }`}
+              title="撮り直し再開メニューを開く / 閉じる"
+            >
+              撮り直し支援
+            </button>
+
+            {isRetakeMenuOpen && (
+              <div className=" absolute bottom-14 left-1/2 z-40 w-80 -translate-x-1/2 rounded-2xl border border-amber-500/40 bg-zinc-950/95 p-3.5 text-xs text-zinc-100 shadow-2xl backdrop-blur-xl">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                  <span className="flex items-center gap-1.5 font-bold text-amber-300">
+                    <Flag className="h-3.5 w-3.5" />
+                    <span>NG・撮り直し支援パネル</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsRetakeMenuOpen(false)}
+                    className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {lastMarkerToast && (
+                  <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
+                    記録済: [{lastMarkerToast.timecode}]{' '}
+                    {NG_MARKER_TYPE_LABELS[lastMarkerToast.type]} (フレーズ #
+                    {lastMarkerToast.segmentIndex + 1})
+                  </div>
+                )}
+
+                <div className="mt-2.5">
+                  <span className="block text-[10px] font-semibold text-zinc-400">
+                    1. 撮り直し開始位置へジャンプ（音声追従位置も自動同期）：
+                  </span>
+                  <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleRetakeJump('current-phrase')}
+                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
+                    >
+                      現在フレーズから再開
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRetakeJump('prev-phrase')}
+                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
+                    >
+                      1フレーズ戻る
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleRetakeJump('current-paragraph-start')
+                      }
+                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
+                    >
+                      現在段落の先頭へ戻る
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleRetakeJump('prev-heading-or-section')
+                      }
+                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
+                    >
+                      前の見出し・章へ戻る
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-3 border-t border-zinc-800 pt-2.5">
+                  <span className="block text-[10px] font-semibold text-zinc-400">
+                    2. マーカー種別の追加記録：
+                  </span>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        { type: 'retake-start', label: '撮り直し開始' },
+                        { type: 'retake-complete', label: '撮り直し完了' },
+                        { type: 'edit-note', label: '編集メモ' },
+                      ] as const
+                    ).map((btn) => (
+                      <button
+                        key={btn.type}
+                        type="button"
+                        onClick={() =>
+                          handleRecordNGMarker(
+                            btn.type,
+                            customMarkerNote.trim() || undefined
+                          )
+                        }
+                        className="rounded-lg bg-zinc-800 px-2.5 py-1 text-[11px] font-medium text-amber-200 transition hover:bg-zinc-700"
+                      >
+                        + {btn.label}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    type="text"
+                    value={customMarkerNote}
+                    onChange={(e) => setCustomMarkerNote(e.target.value)}
+                    placeholder="任意の編集メモ（例: カメラ目線やり直し）"
+                    className="mt-2 w-full rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-[11px] text-zinc-100 placeholder-zinc-500 focus:border-amber-500 focus:outline-none"
+                  />
+                </div>
+
+                {sessionMarkers.length > 0 && (
+                  <div className="mt-2.5 flex items-center justify-between border-t border-zinc-800 pt-2">
+                    <span className="text-[10px] text-zinc-400">
+                      記録済マーカー: {sessionMarkers.length}件
+                    </span>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleExportMarkers('csv')}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-sky-300 hover:bg-zinc-700"
+                      >
+                        CSV保存
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleExportMarkers('json')}
+                        className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-sky-300 hover:bg-zinc-700"
+                      >
+                        JSON保存
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Speed Slider when in Constant Speed Mode */}
           {scrollMode === 'constant' && (

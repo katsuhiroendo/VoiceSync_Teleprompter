@@ -48,7 +48,8 @@ export interface NGMarkerItem {
   id: string;
   sessionId: string;
   elapsedMs: number;          // 録画開始からの実経過ミリ秒（一時停止時間を除く）
-  timecode: string;           // "00:01:23.4" or "01:23"
+  elapsedSeconds: number;     // 録画開始からの実経過秒
+  timecode: string;           // "00:01:25"
   scriptId: string;
   segmentId: string;
   segmentIndex: number;       // 0-based フレーズインデックス
