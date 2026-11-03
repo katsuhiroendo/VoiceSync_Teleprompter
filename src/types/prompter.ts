@@ -64,6 +64,7 @@ export interface PrompterSettings {
   scrollSmoothness: number;      // スクロールの滑らかさ (減衰係数 0.05〜0.3)
   trackingSensitivity: number;   // 追従感度 (0.3〜0.9: 類似度しきい値調整)
   advanceTriggerRatio: number;   // 次の文・段落へ移るタイミング (0.40〜0.95: 小さいほど文の途中で早めに次へ移る)
+  forwardOnlyMode: boolean;      // 一度スクロールした段落・行から音声で自動的に戻らないようにする（前方進行ロック）
   trackingSpeed: number;         // 追従速度倍率 (0.5〜2.0)
   scrollAnimationMs: number;     // スクロールアニメーション時間 (150〜800ms)
   showDebugOverlay: boolean;     // 音声認識デバッグ表示
@@ -104,6 +105,7 @@ export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
   scrollSmoothness: 0.14,
   trackingSensitivity: 0.65,
   advanceTriggerRatio: 0.85,
+  forwardOnlyMode: true,
   trackingSpeed: 1.0,
   scrollAnimationMs: 320,
   showDebugOverlay: true,

@@ -785,6 +785,25 @@ export function SettingsModal({
                   className="w-full accent-sky-500"
                 />
               </div>
+
+              <div className="flex items-center justify-between rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <div>
+                  <span className="block text-xs font-semibold text-zinc-200">
+                    前方進行ロック（一度進んだら戻らない）
+                  </span>
+                  <span className="text-[11px] text-zinc-400">
+                    ONにすると音声認識で前の段落へ逆戻りしなくなります（手動クリックや矢印キーではいつでも戻れます）
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.forwardOnlyMode}
+                  onChange={(e) =>
+                    onUpdateSettings({ forwardOnlyMode: e.target.checked })
+                  }
+                  className="h-4 w-4 shrink-0 accent-sky-500"
+                />
+              </div>
             </div>
           </section>
 

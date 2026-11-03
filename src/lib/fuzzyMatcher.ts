@@ -137,7 +137,7 @@ export function evaluateSpokenAgainstSegment(
 export interface FindBestSegmentOptions {
   currentIndex: number;
   sensitivity: number;           // 0.35〜0.9 (高いほど敏感に追従、標準0.65)
-  advanceTriggerRatio?: number;  // 0.40〜0.95 (現在の文・段落の何割まで読んだら次へ先行遷移するか、標準0.70)
+  advanceTriggerRatio?: number;  // 0.40〜0.95 (現在の文・段落の何割まで読んだら次へ先行遷移するか、標準0.85)
   isFinal: boolean;
   /**
    * 前のセグメント（currentIndex - 1）から先行遷移してきた直後の場合、
@@ -145,6 +145,10 @@ export interface FindBestSegmentOptions {
    * 前のセグメントへの逆戻り（ピンポン現象）や、前のセグメント残余音声による二重送りを防止する。
    */
   preventBacktrackToIndex?: number | null;
+  /**
+   * 一度スクロールして進んだ段落・フレーズからは音声認識で後ろへ戻らないようにする（デフォルト: false、ステージ側では設定に応じて渡す）
+   */
+  allowBacktrack?: boolean;
 }
 
 /**
@@ -263,9 +267,10 @@ export function findBestMatchingSegment(
   const {
     currentIndex,
     sensitivity,
-    advanceTriggerRatio = 0.70,
+    advanceTriggerRatio = 0.85,
     isFinal,
     preventBacktrackToIndex = null,
+    allowBacktrack = true,
   } = options;
 
   if (segments.length === 0) {
@@ -390,8 +395,8 @@ export function findBestMatchingSegment(
   let bestWeightedScore = currentScore;
   let bestRawScore = currentScore;
 
-  // 探索範囲：前方15セグメント、後方5セグメント（長文でも高速かつ段落ジャンプ・読み直しをカバー）
-  const searchStart = Math.max(0, safeCurrentIdx - 5);
+  // 探索範囲：前方15セグメント、後方5セグメント（allowBacktrack=false の場合は現在位置以降のみ探索し、過去の段落には絶対に戻らない）
+  const searchStart = allowBacktrack ? Math.max(0, safeCurrentIdx - 5) : safeCurrentIdx;
   const searchEnd = Math.min(segments.length - 1, safeCurrentIdx + 15);
 
   for (let idx = searchStart; idx <= searchEnd; idx++) {

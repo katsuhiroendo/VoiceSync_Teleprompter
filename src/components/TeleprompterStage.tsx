@@ -339,6 +339,7 @@ export function TeleprompterStage({
           advanceTriggerRatio: settingsRef.current.advanceTriggerRatio,
           isFinal: event.isFinal,
           preventBacktrackToIndex,
+          allowBacktrack: !settingsRef.current.forwardOnlyMode,
         }
       );
 

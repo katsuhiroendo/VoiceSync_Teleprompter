@@ -314,4 +314,23 @@ describe('VoiceSync Fuzzy Matcher & 10 Required Test Cases (Section 14)', () => 
     expect(afterStep.matchedSegmentIndex).toBe(seg3Idx);
     expect(afterStep.matchedSegmentIndex).not.toBe(seg5Idx);
   });
+
+  it('Forward-Only Lock (forwardOnlyMode): never backtracks to previous segments/paragraphs when allowBacktrack is false', () => {
+    const targetIdx = segments.findIndex((s) =>
+      s.text.includes('今回の動画では')
+    );
+    // Even if the speaker completely re-reads a sentence 2 segments earlier, allowBacktrack: false keeps currentIndex locked
+    const lockedRes = findBestMatchingSegment(
+      '今回の動画ではカメラ目線を自然に維持しながら撮影できるテレプロンプターの活用方法についてご紹介します',
+      segments,
+      {
+        currentIndex: targetIdx + 2,
+        sensitivity: defaultSensitivity,
+        isFinal: true,
+        allowBacktrack: false,
+      }
+    );
+    expect(lockedRes.shouldAdvance).toBe(false);
+    expect(lockedRes.matchedSegmentIndex).toBe(targetIdx + 2);
+  });
 });
