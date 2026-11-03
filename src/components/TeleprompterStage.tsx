@@ -1689,7 +1689,7 @@ export function TeleprompterStage({
             }
           >
             <Activity className="h-4 w-4" />
-            <span className="hidden lg:inline">録音テスト</span>
+            <span>録音テスト</span>
           </button>
 
           {/* MacBook Camera Preview Toggle */}
@@ -2611,6 +2611,24 @@ export function TeleprompterStage({
               </span>
             </button>
           )}
+
+          {/* Phase 2: Quick Audio Quality Test button in bottom dock */}
+          <button
+            type="button"
+            disabled={cameraStatus === 'recording'}
+            onClick={() => {
+              if (cameraStatus === 'recording') return;
+              if (isPlaying) {
+                setIsPlaying(false);
+              }
+              setIsAudioTestOpen(true);
+            }}
+            className="flex min-h-[44px] items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2.5 text-xs font-bold text-emerald-300 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+            title="撮影前の10秒録音品質・環境ノイズ・音声認識テスト"
+          >
+            <Activity className="h-3.5 w-3.5" />
+            <span>録音テスト</span>
+          </button>
 
           {/* Phase 3 (Section 5.3 & 5.4): NG / Retake Marker Button & Retake Assist Popover */}
           <div className="relative flex items-center gap-1.5">

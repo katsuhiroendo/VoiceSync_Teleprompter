@@ -15,6 +15,7 @@ import {
   Check,
   Globe,
   Cloud,
+  Activity,
 } from 'lucide-react';
 
 interface ScriptEditorWorkspaceProps {
@@ -29,6 +30,7 @@ interface ScriptEditorWorkspaceProps {
   onStartTeleprompter: () => void;
   onOpenSettings: () => void;
   onOpenSync: () => void;
+  onOpenAudioTest?: () => void;
 }
 
 export function ScriptEditorWorkspace({
@@ -43,6 +45,7 @@ export function ScriptEditorWorkspace({
   onStartTeleprompter,
   onOpenSettings,
   onOpenSync,
+  onOpenAudioTest,
 }: ScriptEditorWorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [saveIndicator, setSaveIndicator] = useState<'saved' | 'saving'>('saved');
@@ -138,9 +141,14 @@ export function ScriptEditorWorkspace({
               <FileText className="h-4 w-4" />
             </div>
             <div>
-              <h1 className="text-sm font-bold tracking-tight text-white">
-                VoiceSync
-              </h1>
+              <div className="flex items-center gap-1.5">
+                <h1 className="text-sm font-bold tracking-tight text-white">
+                  VoiceSync
+                </h1>
+                <span className="rounded-md border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300">
+                  Vol.2
+                </span>
+              </div>
               <p className="text-[11px] text-zinc-400">
                 Studio Teleprompter
               </p>
@@ -319,6 +327,18 @@ export function ScriptEditorWorkspace({
                 </option>
               </select>
             </div>
+
+            {onOpenAudioTest && (
+              <button
+                type="button"
+                onClick={onOpenAudioTest}
+                className="flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3.5 py-2.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/25"
+                title="撮影前の10秒録音品質・環境ノイズ・音声認識テスト"
+              >
+                <Activity className="h-4 w-4" />
+                <span>録音テスト</span>
+              </button>
+            )}
 
             <button
               type="button"

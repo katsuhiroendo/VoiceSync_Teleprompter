@@ -1,4 +1,4 @@
-const CACHE_NAME = 'voicesync-teleprompter-v2';
+const CACHE_NAME = 'voicesync-teleprompter-v3';
 const ASSETS_TO_CACHE = ['./', './manifest.json'];
 
 self.addEventListener('install', (event) => {
@@ -27,10 +27,10 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
-  // Network-First with Offline Cache Fallback:
-  // Always serve the latest deployed HTML/JS when online, and fall back to cache when offline.
+  // Network-First with cache: 'no-cache' to bypass stale browser HTTP disk cache on GitHub Pages,
+  // and fall back to Cache Storage only when offline.
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: 'no-cache' })
       .then((networkResponse) => {
         if (
           networkResponse &&

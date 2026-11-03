@@ -18,6 +18,7 @@ import { ScriptEditorWorkspace } from '@/components/ScriptEditorWorkspace';
 import { TeleprompterStage } from '@/components/TeleprompterStage';
 import { SettingsModal } from '@/components/SettingsModal';
 import { SyncModal } from '@/components/SyncModal';
+import { AudioTestModal } from '@/components/AudioTestModal';
 
 export default function HomePage() {
   const [scripts, setScripts] = useState<ScriptItem[]>(DEFAULT_SAMPLE_SCRIPTS);
@@ -30,11 +31,23 @@ export default function HomePage() {
   const [mode, setMode] = useState<'edit' | 'stage'>('edit');
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isSyncOpen, setIsSyncOpen] = useState<boolean>(false);
+  const [isAudioTestOpen, setIsAudioTestOpen] = useState<boolean>(false);
   const [isHydrated, setIsHydrated] = useState<boolean>(false);
 
-  // Register Offline PWA Service Worker (Phase 5) & ensure immediate update checks
+  // Register Offline PWA Service Worker (Phase 5) & ensure immediate update + reload on new version
   useEffect(() => {
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      let refreshing = false;
+      const handleControllerChange = () => {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      };
+      navigator.serviceWorker.addEventListener(
+        'controllerchange',
+        handleControllerChange
+      );
+
       const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
       navigator.serviceWorker
         .register(`${basePath}/sw.js`, { updateViaCache: 'none' })
@@ -42,6 +55,13 @@ export default function HomePage() {
           reg.update().catch(() => {});
         })
         .catch(() => {});
+
+      return () => {
+        navigator.serviceWorker.removeEventListener(
+          'controllerchange',
+          handleControllerChange
+        );
+      };
     }
   }, []);
 
@@ -180,19 +200,29 @@ export default function HomePage() {
   return (
     <>
       {mode === 'edit' ? (
-        <ScriptEditorWorkspace
-          scripts={scripts}
-          activeScript={activeScript}
-          onSelectScript={setActiveScriptId}
-          onCreateScript={handleCreateScript}
-          onUpdateScript={handleUpdateScript}
-          onDuplicateScript={handleDuplicateScript}
-          onDeleteScript={handleDeleteScript}
-          onImportScriptFile={handleImportScriptFile}
-          onStartTeleprompter={() => setMode('stage')}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenSync={() => setIsSyncOpen(true)}
-        />
+        <>
+          <ScriptEditorWorkspace
+            scripts={scripts}
+            activeScript={activeScript}
+            onSelectScript={setActiveScriptId}
+            onCreateScript={handleCreateScript}
+            onUpdateScript={handleUpdateScript}
+            onDuplicateScript={handleDuplicateScript}
+            onDeleteScript={handleDeleteScript}
+            onImportScriptFile={handleImportScriptFile}
+            onStartTeleprompter={() => setMode('stage')}
+            onOpenSettings={() => setIsSettingsOpen(true)}
+            onOpenSync={() => setIsSyncOpen(true)}
+            onOpenAudioTest={() => setIsAudioTestOpen(true)}
+          />
+          <AudioTestModal
+            isOpen={isAudioTestOpen}
+            onClose={() => setIsAudioTestOpen(false)}
+            preferredAudioDeviceId={settings.preferredAudioDeviceId}
+            language={activeScript.language}
+            isVideoRecordingActive={false}
+          />
+        </>
       ) : (
         <TeleprompterStage
           script={activeScript}
