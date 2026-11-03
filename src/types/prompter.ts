@@ -108,7 +108,7 @@ export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
   forwardOnlyMode: true,
   trackingSpeed: 1.0,
   scrollAnimationMs: 320,
-  showDebugOverlay: true,
+  showDebugOverlay: false,
 
   cameraPreviewMode: 'pip',
   cameraBackdropOpacity: 0.35,
