@@ -1,7 +1,12 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { PrompterSettings, DEFAULT_PROMPTER_SETTINGS } from '@/types/prompter';
+import {
+  CameraDeviceOption,
+  AudioDeviceOption,
+  listMediaInputDevices,
+} from '@/lib/cameraRecorder';
 import {
   X,
   RotateCcw,
@@ -15,6 +20,9 @@ import {
   AlignCenter,
   AlignRight,
   Video,
+  Smartphone,
+  Mic,
+  RefreshCw,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -33,6 +41,40 @@ export function SettingsModal({
   onResetSettings,
 }: SettingsModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const [videoDevices, setVideoDevices] = useState<CameraDeviceOption[]>([]);
+  const [audioDevices, setAudioDevices] = useState<AudioDeviceOption[]>([]);
+  const [isScanningDevices, setIsScanningDevices] = useState<boolean>(false);
+
+  const handleScanDevices = async (requestPermission = false) => {
+    setIsScanningDevices(true);
+    try {
+      if (
+        requestPermission &&
+        typeof navigator !== 'undefined' &&
+        navigator.mediaDevices?.getUserMedia
+      ) {
+        const tempStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+        tempStream.getTracks().forEach((t) => t.stop());
+      }
+      const { videoDevices: vList, audioDevices: aList } =
+        await listMediaInputDevices();
+      setVideoDevices(vList);
+      setAudioDevices(aList);
+    } catch {
+      // Ignore permission cancel during scan
+    } finally {
+      setIsScanningDevices(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      handleScanDevices(false);
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -725,11 +767,151 @@ export function SettingsModal({
             </div>
           </section>
 
-          {/* Section 4: MacBookカメラ撮影・プレビュー設定 */}
+          {/* Section 4: MacBook / USBスマホカメラ・マイク撮影設定 */}
           <section className="space-y-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-rose-400">
-              <Video className="h-4 w-4" />
-              <span>MacBookカメラ撮影・プレビュー設定</span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-semibold text-rose-400">
+                <Video className="h-4 w-4" />
+                <span>カメラ（MacBook内蔵 / USB接続スマホ）＆マイク設定</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleScanDevices(true)}
+                disabled={isScanningDevices}
+                className="flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
+              >
+                <RefreshCw
+                  className={`h-3.5 w-3.5 ${isScanningDevices ? 'animate-spin' : ''}`}
+                />
+                <span>USBスマホ・マイクを再スキャン</span>
+              </button>
+            </div>
+
+            {/* Camera & Microphone Device Selectors */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-2 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-zinc-300">
+                  <Smartphone className="h-3.5 w-3.5 text-rose-400" />
+                  <span>使用するカメラ（USB接続スマホ / 内蔵カメラ）</span>
+                </label>
+                <select
+                  value={settings.preferredVideoDeviceId}
+                  onChange={(e) =>
+                    onUpdateSettings({ preferredVideoDeviceId: e.target.value })
+                  }
+                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-100 focus:border-rose-500 focus:outline-none"
+                >
+                  <option value="" className="bg-zinc-950">
+                    自動選択（USBスマホカメラ接続時はスマホを優先）
+                  </option>
+                  {videoDevices.map((d) => (
+                    <option
+                      key={d.deviceId}
+                      value={d.deviceId}
+                      className="bg-zinc-950"
+                    >
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-zinc-500">
+                  ※ スマホ名が表示されない場合は右上の「再スキャン」を押してください。
+                </p>
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-zinc-300">
+                  <Mic className="h-3.5 w-3.5 text-emerald-400" />
+                  <span>使用するマイク（外部マイク / スマホ / MacBook）</span>
+                </label>
+                <select
+                  value={settings.preferredAudioDeviceId}
+                  onChange={(e) =>
+                    onUpdateSettings({ preferredAudioDeviceId: e.target.value })
+                  }
+                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-100 focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="" className="bg-zinc-950">
+                    システム標準マイク
+                  </option>
+                  {audioDevices.map((a) => (
+                    <option
+                      key={a.deviceId}
+                      value={a.deviceId}
+                      className="bg-zinc-950"
+                    >
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-zinc-500">
+                  ※ 録画音声と音声追従の音量メーターに適用されます。
+                </p>
+              </div>
+            </div>
+
+            {/* Resolution & Aspect Ratio Presets */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-2.5 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <span className="block text-xs font-medium text-zinc-300">
+                  録画解像度（スマホ高画質対応）
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { id: '1080p', label: 'Full HD (1080p)' },
+                    { id: '4k', label: '4K UHD (2160p)' },
+                    { id: '720p', label: 'HD (720p 軽量)' },
+                  ].map((res) => (
+                    <button
+                      key={res.id}
+                      type="button"
+                      onClick={() =>
+                        onUpdateSettings({
+                          cameraResolution:
+                            res.id as PrompterSettings['cameraResolution'],
+                        })
+                      }
+                      className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
+                        settings.cameraResolution === res.id
+                          ? 'bg-rose-500 text-white'
+                          : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {res.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2.5 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <span className="block text-xs font-medium text-zinc-300">
+                  画面比率（横動画 / ショート縦動画）
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { id: '16:9', label: '16:9 横画面 (YouTube標準)' },
+                    { id: '9:16', label: '9:16 縦画面 (Shorts / Reels)' },
+                  ].map((ratio) => (
+                    <button
+                      key={ratio.id}
+                      type="button"
+                      onClick={() =>
+                        onUpdateSettings({
+                          cameraAspectRatio:
+                            ratio.id as PrompterSettings['cameraAspectRatio'],
+                        })
+                      }
+                      className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
+                        settings.cameraAspectRatio === ratio.id
+                          ? 'bg-rose-500 text-white'
+                          : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {ratio.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -815,6 +997,27 @@ export function SettingsModal({
                   </label>
                 </div>
               </div>
+            </div>
+
+            {/* USB Smartphone Camera Quick Guide */}
+            <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-3.5 text-[11px] leading-relaxed text-zinc-400">
+              <p className="font-semibold text-zinc-200">
+                💡 MacBookにUSB接続したスマホをカメラとして使う手順：
+              </p>
+              <ul className="mt-1 list-inside list-disc space-y-1">
+                <li>
+                  <strong className="text-zinc-300">
+                    Google Pixel / Android (Android 14以降)
+                  </strong>
+                  ：USBケーブルでMacBookに接続し、スマホ画面の通知「このデバイスをUSBで充電中」をタップ ＞ USBの用途で
+                  <strong className="text-sky-300">「ウェブカメラ (Webcam)」</strong>
+                  を選択すると、『📱 Android Webcam』として自動認識されます。
+                </li>
+                <li>
+                  <strong className="text-zinc-300">iPhone (連係カメラ)</strong>
+                  ：USB接続または同一Apple IDで近づけると、『📱 iPhone カメラ』としてそのまま選択できます。
+                </li>
+              </ul>
             </div>
           </section>
         </div>

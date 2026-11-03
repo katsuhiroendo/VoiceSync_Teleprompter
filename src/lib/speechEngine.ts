@@ -176,6 +176,7 @@ export class SpeechRecognitionController {
   private isDesiredActive = false;
   private isRecognitionRunning = false;
   private language: LanguageCode = 'ja-JP';
+  private preferredAudioDeviceId = '';
   private callbacks: SpeechEngineCallbacks;
   private processedFinalSignatures = new Set<string>();
   private lastSpeechTimestamp = 0;
@@ -186,6 +187,14 @@ export class SpeechRecognitionController {
 
   public updateCallbacks(callbacks: SpeechEngineCallbacks): void {
     this.callbacks = callbacks;
+  }
+
+  public setAudioDeviceId(deviceId: string): void {
+    if (this.preferredAudioDeviceId === deviceId) return;
+    this.preferredAudioDeviceId = deviceId;
+    if (this.isDesiredActive) {
+      this.startAudioMeter();
+    }
   }
 
   public setLanguage(lang: LanguageCode): void {
@@ -203,8 +212,14 @@ export class SpeechRecognitionController {
     }
   }
 
-  public async start(lang: LanguageCode): Promise<boolean> {
+  public async start(
+    lang: LanguageCode,
+    audioDeviceId?: string
+  ): Promise<boolean> {
     this.language = lang;
+    if (typeof audioDeviceId === 'string') {
+      this.preferredAudioDeviceId = audioDeviceId;
+    }
 
     // 既に稼働中の場合は重複起動しない（4.1 / 12. マイク重複起動防止）
     if (this.isDesiredActive && this.isRecognitionRunning) {
@@ -407,6 +422,9 @@ export class SpeechRecognitionController {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          ...(this.preferredAudioDeviceId
+            ? { deviceId: { ideal: this.preferredAudioDeviceId } }
+            : {}),
         },
         video: false,
       });

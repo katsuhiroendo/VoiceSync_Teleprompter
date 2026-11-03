@@ -19,10 +19,12 @@ import {
 } from '@/lib/fuzzyMatcher';
 import {
   CameraDeviceOption,
+  AudioDeviceOption,
   CameraStatus,
   RecordedVideoClip,
   selectSupportedVideoMimeType,
-  listVideoInputDevices,
+  listMediaInputDevices,
+  buildVideoTrackConstraints,
   formatDurationTimer,
 } from '@/lib/cameraRecorder';
 import {
@@ -53,6 +55,7 @@ import {
   Square,
   Download,
   Layers,
+  Smartphone,
 } from 'lucide-react';
 
 interface TeleprompterStageProps {
@@ -135,11 +138,17 @@ export function TeleprompterStage({
   const [isOffline, setIsOffline] = useState<boolean>(false);
   const [simulationInput, setSimulationInput] = useState<string>('');
 
-  // Camera Preview & Video Recording State (MacBook built-in / external camera)
+  // Camera Preview & Video Recording State (MacBook built-in / USB Smartphone / External Mic)
   const [cameraStatus, setCameraStatus] = useState<CameraStatus>('off');
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [videoDevices, setVideoDevices] = useState<CameraDeviceOption[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [audioDevices, setAudioDevices] = useState<AudioDeviceOption[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>(
+    settings.preferredVideoDeviceId || ''
+  );
+  const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>(
+    settings.preferredAudioDeviceId || ''
+  );
   const [recordingSeconds, setRecordingSeconds] = useState<number>(0);
   const [recordedClip, setRecordedClip] = useState<RecordedVideoClip | null>(
     null
@@ -383,9 +392,41 @@ export function TeleprompterStage({
     setRecordingSeconds(0);
   }, [attachStreamToVideoElements]);
 
-  // Start MacBook built-in / external camera stream
+  // Refresh available video (MacBook / USB Smartphone) & audio (Mic) devices on mount and hot-plug
+  const refreshMediaDevices = useCallback(async () => {
+    const { videoDevices: vList, audioDevices: aList } =
+      await listMediaInputDevices();
+    setVideoDevices(vList);
+    setAudioDevices(aList);
+    return { vList, aList };
+  }, []);
+
+  useEffect(() => {
+    refreshMediaDevices();
+    if (
+      typeof navigator !== 'undefined' &&
+      navigator.mediaDevices &&
+      navigator.mediaDevices.addEventListener
+    ) {
+      navigator.mediaDevices.addEventListener(
+        'devicechange',
+        refreshMediaDevices
+      );
+      return () => {
+        navigator.mediaDevices.removeEventListener(
+          'devicechange',
+          refreshMediaDevices
+        );
+      };
+    }
+  }, [refreshMediaDevices]);
+
+  // Start MacBook built-in / USB-connected Smartphone camera stream
   const startCameraStream = useCallback(
-    async (overrideDeviceId?: string): Promise<MediaStream | null> => {
+    async (
+      overrideVideoDeviceId?: string,
+      overrideAudioDeviceId?: string
+    ): Promise<MediaStream | null> => {
       if (
         typeof navigator === 'undefined' ||
         !navigator.mediaDevices ||
@@ -406,36 +447,80 @@ export function TeleprompterStage({
           cameraStreamRef.current.getTracks().forEach((t) => t.stop());
         }
 
-        const targetDeviceId = overrideDeviceId ?? selectedDeviceId;
-        const videoConstraints: MediaTrackConstraints = {
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 30 },
-          ...(targetDeviceId
-            ? { deviceId: { exact: targetDeviceId } }
-            : { facingMode: 'user' }),
+        // Determine target video device (prefer user selection, or auto-detect USB smartphone if none selected)
+        let targetVideoId =
+          overrideVideoDeviceId ??
+          (selectedDeviceId || settingsRef.current.preferredVideoDeviceId);
+
+        const targetAudioId =
+          overrideAudioDeviceId ??
+          (selectedAudioDeviceId || settingsRef.current.preferredAudioDeviceId);
+
+        const videoConstraints = buildVideoTrackConstraints({
+          deviceId: targetVideoId || undefined,
+          resolution: settingsRef.current.cameraResolution,
+          aspectRatio: settingsRef.current.cameraAspectRatio,
+        });
+
+        const audioConstraints: MediaTrackConstraints = {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          ...(targetAudioId ? { deviceId: { ideal: targetAudioId } } : {}),
         };
 
-        const stream = await navigator.mediaDevices.getUserMedia({
+        let stream = await navigator.mediaDevices.getUserMedia({
           video: videoConstraints,
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
+          audio: audioConstraints,
         });
+
+        // After permission is granted, enumerate device labels so we can detect USB Smartphone cameras (Pixel / iPhone)
+        const { vList, aList } = await refreshMediaDevices();
+
+        // If no explicit video device was chosen and a USB smartphone camera is connected, automatically switch to it
+        if (!targetVideoId && vList.length > 1) {
+          const smartphoneCam = vList.find((d) => d.isSmartphoneOrExternal);
+          const currentTrackId = stream
+            .getVideoTracks()[0]
+            ?.getSettings()?.deviceId;
+
+          if (
+            smartphoneCam &&
+            smartphoneCam.deviceId &&
+            smartphoneCam.deviceId !== currentTrackId
+          ) {
+            targetVideoId = smartphoneCam.deviceId;
+            stream.getTracks().forEach((t) => t.stop());
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: buildVideoTrackConstraints({
+                deviceId: targetVideoId,
+                resolution: settingsRef.current.cameraResolution,
+                aspectRatio: settingsRef.current.cameraAspectRatio,
+              }),
+              audio: audioConstraints,
+            });
+          }
+        }
 
         cameraStreamRef.current = stream;
         setCameraStatus('ready');
         attachStreamToVideoElements(stream);
 
-        const devices = await listVideoInputDevices();
-        setVideoDevices(devices);
-        if (!targetDeviceId && devices.length > 0) {
-          const activeTrack = stream.getVideoTracks()[0];
-          const activeId = activeTrack?.getSettings()?.deviceId;
-          setSelectedDeviceId(activeId || devices[0].deviceId);
-        }
+        const activeVideoTrack = stream.getVideoTracks()[0];
+        const activeVideoId =
+          activeVideoTrack?.getSettings()?.deviceId ||
+          targetVideoId ||
+          vList[0]?.deviceId ||
+          '';
+        setSelectedDeviceId(activeVideoId);
+
+        const activeAudioTrack = stream.getAudioTracks()[0];
+        const activeAudioId =
+          activeAudioTrack?.getSettings()?.deviceId ||
+          targetAudioId ||
+          aList[0]?.deviceId ||
+          '';
+        setSelectedAudioDeviceId(activeAudioId);
 
         return stream;
       } catch (err) {
@@ -450,13 +535,18 @@ export function TeleprompterStage({
           );
         } else {
           setCameraError(
-            'カメラを起動できませんでした。他のアプリがカメラを使用していないか確認してください。'
+            '指定されたカメラまたはマイクを起動できませんでした。USB接続スマホが「ウェブカメラ (Webcam)」モードになっているか確認してください。'
           );
         }
         return null;
       }
     },
-    [attachStreamToVideoElements, selectedDeviceId]
+    [
+      attachStreamToVideoElements,
+      refreshMediaDevices,
+      selectedAudioDeviceId,
+      selectedDeviceId,
+    ]
   );
 
   // Start video recording on the MacBook camera
@@ -575,10 +665,16 @@ export function TeleprompterStage({
     };
   }, []);
 
-  // Keep language synchronized without recreating the controller
+  // Keep language & preferred audio device synchronized without recreating the controller
   useEffect(() => {
     speechControllerRef.current?.setLanguage(script.language);
   }, [script.language]);
+
+  useEffect(() => {
+    speechControllerRef.current?.setAudioDeviceId(
+      selectedAudioDeviceId || settings.preferredAudioDeviceId
+    );
+  }, [selectedAudioDeviceId, settings.preferredAudioDeviceId]);
 
   // Monitor online/offline status & auto-switch to manual mode if offline (Section 9)
   useEffect(() => {
@@ -606,7 +702,10 @@ export function TeleprompterStage({
     if (!controller) return;
 
     if (isPlaying && scrollMode === 'voice') {
-      controller.start(script.language);
+      controller.start(
+        script.language,
+        selectedAudioDeviceId || settings.preferredAudioDeviceId
+      );
     } else {
       controller.stop();
       if (!isPlaying) {
@@ -615,7 +714,13 @@ export function TeleprompterStage({
         setSpeechStatus('idle');
       }
     }
-  }, [isPlaying, scrollMode, script.language]);
+  }, [
+    isPlaying,
+    scrollMode,
+    script.language,
+    selectedAudioDeviceId,
+    settings.preferredAudioDeviceId,
+  ]);
 
   // Auto-hide controls during active playback for distraction-free recording
   const resetControlsIdleTimer = useCallback(() => {
@@ -1207,35 +1312,78 @@ export function TeleprompterStage({
                   ? 'scaleX(-1)'
                   : undefined,
               }}
-              className="h-28 w-48 object-cover sm:h-32 sm:w-56"
+              className={
+                settings.cameraAspectRatio === '9:16'
+                  ? 'h-44 w-28 object-cover sm:h-52 sm:w-32'
+                  : 'h-28 w-48 object-cover sm:h-32 sm:w-56'
+              }
             />
-            <div className="absolute right-1.5 bottom-1.5 left-1.5 flex items-center justify-between rounded-lg bg-black/65 px-2 py-0.5 text-[10px] text-zinc-200 backdrop-blur-sm">
-              <span className="truncate">
-                {cameraStatus === 'recording'
-                  ? `● REC ${formatDurationTimer(recordingSeconds)}`
-                  : 'カメラ目線プレビュー'}
-              </span>
-              {videoDevices.length > 1 && (
-                <select
-                  value={selectedDeviceId}
-                  onChange={(e) => {
-                    const nextId = e.target.value;
-                    setSelectedDeviceId(nextId);
-                    startCameraStream(nextId);
-                  }}
-                  aria-label="カメラ切替"
-                  className="max-w-[90px] truncate bg-transparent text-[10px] text-sky-300 focus:outline-none"
-                >
-                  {videoDevices.map((d) => (
-                    <option
-                      key={d.deviceId}
-                      value={d.deviceId}
-                      className="bg-zinc-900 text-white"
-                    >
-                      {d.label}
-                    </option>
-                  ))}
-                </select>
+            <div className="absolute right-1.5 bottom-1.5 left-1.5 flex flex-col gap-1 rounded-lg bg-black/75 px-2 py-1 text-[10px] text-zinc-200 backdrop-blur-sm">
+              <div className="flex items-center justify-between gap-1">
+                <span className="flex items-center gap-1 truncate font-medium">
+                  <Smartphone className="h-3 w-3 shrink-0 text-rose-400" />
+                  {cameraStatus === 'recording'
+                    ? `REC ${formatDurationTimer(recordingSeconds)}`
+                    : settings.cameraResolution.toUpperCase()}
+                </span>
+                {videoDevices.length > 0 && (
+                  <select
+                    value={selectedDeviceId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setSelectedDeviceId(nextId);
+                      onUpdateSettings({ preferredVideoDeviceId: nextId });
+                      startCameraStream(nextId, selectedAudioDeviceId);
+                    }}
+                    aria-label="カメラ切替 (MacBook / USBスマホ)"
+                    className="max-w-[115px] truncate bg-transparent text-[10px] text-sky-300 focus:outline-none"
+                  >
+                    {videoDevices.map((d) => (
+                      <option
+                        key={d.deviceId}
+                        value={d.deviceId}
+                        className="bg-zinc-900 text-white"
+                      >
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {audioDevices.length > 0 && (
+                <div className="flex items-center justify-between gap-1 border-t border-white/10 pt-0.5">
+                  <span className="flex items-center gap-1 text-[9px] text-zinc-400">
+                    <Mic className="h-2.5 w-2.5 text-emerald-400" />
+                    マイク
+                  </span>
+                  <select
+                    value={selectedAudioDeviceId}
+                    onChange={(e) => {
+                      const nextAudioId = e.target.value;
+                      setSelectedAudioDeviceId(nextAudioId);
+                      onUpdateSettings({ preferredAudioDeviceId: nextAudioId });
+                      if (
+                        cameraStatus === 'ready' ||
+                        cameraStatus === 'recording'
+                      ) {
+                        startCameraStream(selectedDeviceId, nextAudioId);
+                      }
+                    }}
+                    aria-label="マイク切替"
+                    className="max-w-[115px] truncate bg-transparent text-[9px] text-emerald-300 focus:outline-none"
+                  >
+                    {audioDevices.map((a) => (
+                      <option
+                        key={a.deviceId}
+                        value={a.deviceId}
+                        className="bg-zinc-900 text-white"
+                      >
+                        {a.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               )}
             </div>
           </div>

@@ -32,6 +32,8 @@ export type SpeechStatus =
   | 'error';        // エラー
 
 export type CameraPreviewMode = 'pip' | 'backdrop' | 'hidden';
+export type CameraResolutionPreset = '1080p' | '4k' | '720p';
+export type CameraAspectRatioPreset = '16:9' | '9:16';
 
 export interface PrompterSettings {
   // 5. 表示設定 (Display settings)
@@ -66,11 +68,15 @@ export interface PrompterSettings {
   scrollAnimationMs: number;     // スクロールアニメーション時間 (150〜800ms)
   showDebugOverlay: boolean;     // 音声認識デバッグ表示
 
-  // カメラ撮影・プレビュー設定 (Camera recording settings)
-  cameraPreviewMode: CameraPreviewMode; // 'pip' (上部小窓) | 'backdrop' (背面全体) | 'hidden'
-  cameraBackdropOpacity: number;        // 背面表示時のカメラ不透明度 (0.15〜0.85)
-  cameraMirrorPreview: boolean;         // カメラプレビューを鏡像反転するか (default: true)
-  autoStartPrompterOnRecord: boolean;   // 録画開始時に自動でプロンプターも開始するか
+  // カメラ撮影・プレビュー・USBスマホ連携設定 (Camera & USB Smartphone recording settings)
+  cameraPreviewMode: CameraPreviewMode;         // 'pip' (上部小窓) | 'backdrop' (背面全体) | 'hidden'
+  cameraBackdropOpacity: number;                // 背面表示時のカメラ不透明度 (0.15〜0.85)
+  cameraMirrorPreview: boolean;                 // カメラプレビューを鏡像反転するか (default: true)
+  autoStartPrompterOnRecord: boolean;           // 録画開始時に自動でプロンプターも開始するか
+  preferredVideoDeviceId: string;               // 選択されたカメラデバイスID (空文字で自動/優先検出)
+  preferredAudioDeviceId: string;               // 選択されたマイクデバイスID (空文字でシステム標準)
+  cameraResolution: CameraResolutionPreset;     // '1080p' | '4k' | '720p'
+  cameraAspectRatio: CameraAspectRatioPreset;   // '16:9' (通常YouTube) | '9:16' (ショート動画)
 }
 
 export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
@@ -106,4 +112,8 @@ export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
   cameraBackdropOpacity: 0.35,
   cameraMirrorPreview: true,
   autoStartPrompterOnRecord: true,
+  preferredVideoDeviceId: '',
+  preferredAudioDeviceId: '',
+  cameraResolution: '1080p',
+  cameraAspectRatio: '16:9',
 };
