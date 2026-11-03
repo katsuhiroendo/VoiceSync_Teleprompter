@@ -35,7 +35,8 @@ export default function HomePage() {
   // Register Offline PWA Service Worker (Phase 5)
   useEffect(() => {
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
+      const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+      navigator.serviceWorker.register(`${basePath}/sw.js`).catch(() => {});
     }
   }, []);
 

@@ -1,11 +1,13 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 export const metadata: Metadata = {
   title: 'VoiceSync Teleprompter | 音声追従型プロンプター',
   description:
     'YouTube動画撮影向け・リアルタイム音声認識＆自動スクロール対応テレプロンプターWebアプリケーション',
-  manifest: '/manifest.json',
+  manifest: `${basePath}/manifest.json`,
 };
 
 export const viewport: Viewport = {

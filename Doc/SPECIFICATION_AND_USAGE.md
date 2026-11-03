@@ -25,7 +25,17 @@
 
 ## 3. 起動方法・セットアップ手順
 
-### 3.1 ローカル開発サーバーでの起動
+### 3.1 GitHub Pages（Web公開版）での利用
+本リポジトリには GitHub Actions による静的エクスポート自動デプロイ（[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)）が設定されています。
+
+- **公開URL**：`https://katsuhiroendo.github.io/VoiceSync_Teleprompter/`
+- **初回有効化手順（GitHub上での設定）**：
+  1. GitHubリポジトリ（`https://github.com/katsuhiroendo/VoiceSync_Teleprompter`）の **Settings** タブを開きます。
+  2. 左メニューの **Pages** をクリックします。
+  3. **Build and deployment ＞ Source** のプルダウンを `Deploy from a branch` から **`GitHub Actions`** に変更します。
+  4. `main` ブランチへのプッシュ時（または **Actions** タブから `Deploy VoiceSync Teleprompter to GitHub Pages` を手動実行した際）に自動でビルド・公開され、MacBook・iPad・スマートフォンから上記URLを開くだけでそのまま利用できます。
+
+### 3.2 ローカル開発サーバーでの起動
 プロジェクトルートで以下のコマンドを実行します。
 
 ```bash
@@ -38,7 +48,7 @@ npm run dev
 
 ブラウザで `http://localhost:3000` を開くとアプリケーションが起動します。
 
-### 3.2 本番ビルドと起動・テスト実行
+### 3.3 本番ビルドと起動・テスト実行
 ```bash
 # 自動テスト（Vitest）の実行
 npm test
@@ -46,12 +56,11 @@ npm test
 # TypeScript 型チェック
 npx tsc --noEmit
 
-# 本番ビルドと起動
+# 本番ビルド（静的エクスポート out/ ディレクトリ生成）
 npm run build
-npm run start
 ```
 
-### 3.3 iPad / スマートフォン（PWA）でのホーム画面追加手順
+### 3.4 iPad / スマートフォン（PWA）でのホーム画面追加手順
 1. Safari（iPadOS）または Chrome（Android）でアプリケーションURLを開きます。
 2. ブラウザの共有メニューから **「ホーム画面に追加」** を選択します。
 3. アドレスバーのないフルスクリーンアプリ（Standalone PWA）として起動でき、撮影時の表示領域を最大化できます。
