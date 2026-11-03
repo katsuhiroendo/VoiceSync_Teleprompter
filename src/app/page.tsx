@@ -32,11 +32,16 @@ export default function HomePage() {
   const [isSyncOpen, setIsSyncOpen] = useState<boolean>(false);
   const [isHydrated, setIsHydrated] = useState<boolean>(false);
 
-  // Register Offline PWA Service Worker (Phase 5)
+  // Register Offline PWA Service Worker (Phase 5) & ensure immediate update checks
   useEffect(() => {
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
       const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
-      navigator.serviceWorker.register(`${basePath}/sw.js`).catch(() => {});
+      navigator.serviceWorker
+        .register(`${basePath}/sw.js`, { updateViaCache: 'none' })
+        .then((reg) => {
+          reg.update().catch(() => {});
+        })
+        .catch(() => {});
     }
   }, []);
 
