@@ -246,20 +246,34 @@ export function TeleprompterStage({
       const readingAnchorPx =
         (settingsRef.current.readingLinePositionVh / 100) * containerHeight;
 
-      // Anchor the top of the active segment right at the reading guide line (with a small 12px breathing room)
-      // instead of pushing 35% of the segment above the guide line. This ensures that when readingLinePositionVh
-      // is set near the top (e.g. 15% in Camera Eyeline Mode), the previous line's ending stays visible above
-      // and the active multi-line paragraph never gets clipped at the top of the viewport.
+      // Anchor the top of the active segment right at the reading guide line
       const targetOffsetTop = targetEl.offsetTop;
       const desiredScrollTop = Math.max(
         0,
-        targetOffsetTop - Math.max(24, readingAnchorPx - 8)
+        targetOffsetTop - Math.max(0, readingAnchorPx - 4)
       );
 
       animateScrollToTarget(desiredScrollTop);
     },
     [animateScrollToTarget]
   );
+
+  // Re-align the active segment whenever layout/position settings change so the first sentence
+  // and current highlight immediately match the reading guide line!
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      scrollToSegment(activeIndexRef.current);
+    }, 30);
+    return () => clearTimeout(timer);
+  }, [
+    settings.cameraEyelineMode,
+    settings.eyelineHeightVh,
+    settings.eyelineTopOffsetVh,
+    settings.readingLinePositionVh,
+    settings.marginVerticalVh,
+    settings.fontSize,
+    scrollToSegment,
+  ]);
 
   // Keep track of the normalized transcript & source segment when we last advanced,
   // so the remaining words of the previous phrase don't cause ping-pong backtracking or double advances.
@@ -917,8 +931,8 @@ export function TeleprompterStage({
     setIsPlaying(false);
     activeIndexRef.current = 0;
     setActiveSegmentIndex(0);
-    animateScrollToTarget(0);
-  }, [animateScrollToTarget]);
+    scrollToSegment(0);
+  }, [scrollToSegment]);
 
   const handleJumpParagraph = useCallback(
     (direction: 'prev' | 'next') => {
@@ -1529,7 +1543,9 @@ export function TeleprompterStage({
             }
           }}
           style={{
-            paddingTop: `${settings.marginVerticalVh}vh`,
+            paddingTop: settings.cameraEyelineMode
+              ? `${Math.max(1, (settings.eyelineHeightVh * settings.readingLinePositionVh) / 100)}vh`
+              : `${Math.min(settings.marginVerticalVh, settings.readingLinePositionVh)}vh`,
             paddingBottom: `${Math.max(48, settings.marginVerticalVh)}vh`,
             paddingLeft: `${settings.marginHorizontalPx}px`,
             paddingRight: `${settings.marginHorizontalPx}px`,

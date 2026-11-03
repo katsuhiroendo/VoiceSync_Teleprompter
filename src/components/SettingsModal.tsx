@@ -295,7 +295,7 @@ export function SettingsModal({
                 />
               </div>
 
-              {/* 上下余白: 10〜50vh */}
+              {/* 上下余白: 0〜50vh */}
               <div className="space-y-2 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
                 <div className="flex justify-between text-xs font-medium">
                   <span className="text-zinc-300">上下余白</span>
@@ -305,7 +305,7 @@ export function SettingsModal({
                 </div>
                 <input
                   type="range"
-                  min={10}
+                  min={0}
                   max={50}
                   step={2}
                   value={settings.marginVerticalVh}
@@ -618,7 +618,7 @@ export function SettingsModal({
                 </div>
                 <input
                   type="range"
-                  min={15}
+                  min={2}
                   max={60}
                   step={1}
                   value={settings.readingLinePositionVh}
@@ -630,9 +630,9 @@ export function SettingsModal({
                   className="w-full accent-sky-500"
                 />
                 <div className="flex justify-between text-[10px] text-zinc-500">
+                  <span>2% (最上部・カメラ極近)</span>
                   <span>15% (カメラ直下)</span>
                   <span>32% (標準)</span>
-                  <span>60% (中央下)</span>
                 </div>
               </div>
 
