@@ -241,4 +241,27 @@ describe('VoiceSync Fuzzy Matcher & 10 Required Test Cases (Section 14)', () => 
     expect(afterAdvanceRes.matchedSegmentIndex).toBe(nextParagraphIdx);
     expect(afterAdvanceRes.reason).toBe('same-segment');
   });
+
+  it('Multi-Line Cascade Guard: prevents jumping multiple segments when a short suffix of the previous sentence shares common endings with the next sentence', () => {
+    const seg2Idx = segments.findIndex((s) =>
+      s.text.includes('今回の動画では')
+    );
+    const nextIdx = seg2Idx + 1;
+
+    // Suppose we just advanced early from seg2Idx to nextIdx, and the newly sliced tail is just "ご紹介します" (6 chars).
+    // Even if "ます" or a short phrase partially matches the end of nextIdx or nextIdx+1,
+    // it must stay on nextIdx because the speaker hasn't started reading the beginning of nextIdx yet.
+    const shortResidualTail = 'ご紹介します';
+
+    const cascadeRes = findBestMatchingSegment(shortResidualTail, segments, {
+      currentIndex: nextIdx,
+      sensitivity: defaultSensitivity,
+      advanceTriggerRatio: 0.60,
+      isFinal: false,
+      preventBacktrackToIndex: seg2Idx,
+    });
+
+    expect(cascadeRes.shouldAdvance).toBe(false);
+    expect(cascadeRes.matchedSegmentIndex).toBe(nextIdx);
+  });
 });

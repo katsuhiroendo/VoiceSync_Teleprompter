@@ -7,7 +7,10 @@ import {
   ScrollMode,
   SpeechStatus,
 } from '@/types/prompter';
-import { parseScriptToSegments } from '@/lib/scriptParser';
+import {
+   parseScriptToSegments,
+  normalizeTextForMatching,
+} from '@/lib/scriptParser';
 import {
   SpeechRecognitionController,
   SpeechTranscriptEvent,
@@ -269,6 +272,8 @@ export function TeleprompterStage({
       setIsInterimTranscript(!event.isFinal);
       setSpeechStatus('matching');
 
+      // Keep track of the normalized transcript & source segment when we last advanced,
+      // so the remaining words of the previous phrase don't cause ping-pong backtracking or double advances.
       const now = Date.now();
       const timeSinceLastAdvance = now - lastAdvanceTimestampRef.current;
 
@@ -277,20 +282,22 @@ export function TeleprompterStage({
         lastAdvanceSpokenLengthRef.current = 0;
       }
 
+      // Normalize first so kanji conversion changes on the prefix do not break length-based slicing
+      const fullSpokenNorm = normalizeTextForMatching(event.transcript);
+
       // If we already advanced during this same recognition utterance (resultIndex),
-      // slice only the newly spoken tail so the earlier sentence's words never pull us backward.
+      // slice only the newly spoken normalized tail so the earlier sentence's words never pull us backward or double-advance.
       let effectiveTranscript = event.transcript;
       if (
         lastAdvanceSpokenLengthRef.current > 0 &&
         event.resultIndex === lastAdvanceResultIndexRef.current
       ) {
-        if (event.transcript.length > lastAdvanceSpokenLengthRef.current) {
-          effectiveTranscript = event.transcript.slice(
-            Math.max(0, lastAdvanceSpokenLengthRef.current - 2)
-          );
-        } else {
-          // Final confirmation of the exact same utterance that already triggered an early advance:
-          // hold steady on the new paragraph/segment without re-evaluating the old sentence!
+        const newlyAddedNormLen =
+          fullSpokenNorm.length - lastAdvanceSpokenLengthRef.current;
+
+        // Require at least 4 newly spoken normalized characters after an advance before evaluating again,
+        // and enforce a 450ms minimum cooldown between consecutive advances within the same utterance.
+        if (newlyAddedNormLen < 4 || timeSinceLastAdvance < 450) {
           setTimeout(() => {
             setSpeechStatus((prev) =>
               prev === 'matching' ? 'listening' : prev
@@ -298,9 +305,13 @@ export function TeleprompterStage({
           }, 200);
           return;
         }
+
+        effectiveTranscript = fullSpokenNorm.slice(
+          lastAdvanceSpokenLengthRef.current
+        );
       }
 
-      // Protect against ping-pong backtracking to the segment we just advanced from within the last 6 seconds
+      // Protect against ping-pong backtracking or residual double-advancing from the segment we just left
       const preventBacktrackToIndex =
         timeSinceLastAdvance < 6000 ? lastAdvancedFromIndexRef.current : null;
 
@@ -331,7 +342,7 @@ export function TeleprompterStage({
           lastAdvancedFromIndexRef.current = prevIdx;
           lastAdvanceTimestampRef.current = now;
           lastAdvanceResultIndexRef.current = event.resultIndex;
-          lastAdvanceSpokenLengthRef.current = event.transcript.length;
+          lastAdvanceSpokenLengthRef.current = fullSpokenNorm.length;
         } else {
           // Intentional backtrack reread
           lastAdvancedFromIndexRef.current = null;

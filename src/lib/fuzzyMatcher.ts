@@ -271,9 +271,12 @@ export function findBestMatchingSegment(
     currentSeg.normalizedText
   );
 
-  // 直前に先行送り（early-trigger-advance等）されたばかりで、発話内容がまだ1つ前のセグメントと強く一致しており
-  // かつ現在（遷移後）のセグメントとはまだ一致していない場合（＝前の文の末尾を読み切っている最中）は、
-  // 元の段落への逆戻りも、さらなる二重送りもせず「現在の段落位置をピタッと維持」する（ピンポン現象の完全防止）
+  // 直前に先行送り（early-trigger-advance等）されたばかりで、話者がまだ1つ前のセグメントの後半（文末）を
+  // 読み終えている途中の場合は、現在のセグメント（N+1）に留まり、さらなる次セグメント（N+2等）への連鎖飛び越しを防ぐ。
+  // 条件：
+  // 1) 発話が直前セグメント（preventBacktrackToIndex）と一致しており現在セグメントより高い、または
+  // 2) 現在セグメントの冒頭（先頭65%領域）とはまだほとんど一致していないのに、文末の定型語（「ます」「です」等）だけで
+  //    現在セグメントやその先のセグメントの末尾と部分一致してしまっている場合
   if (
     preventBacktrackToIndex !== null &&
     preventBacktrackToIndex >= 0 &&
@@ -285,7 +288,21 @@ export function findBestMatchingSegment(
       spokenNorm,
       prevSeg.normalizedText
     );
-    if (prevScore > currentScore + 0.08 && currentScore < baseThreshold + 0.12) {
+    const currentHeadLen = Math.max(
+      4,
+      Math.ceil(currentSeg.normalizedText.length * 0.65)
+    );
+    const currentHeadSlice = currentSeg.normalizedText.slice(0, currentHeadLen);
+    const currentHeadScore = evaluateSpokenAgainstSegment(
+      spokenNorm,
+      currentHeadSlice
+    );
+
+    // まだ新しいセグメントの前半を読み始めておらず、前のセグメントの残り言葉（または文末の共通語尾）を話している段階
+    if (
+      (prevScore >= currentScore && currentHeadScore < baseThreshold + 0.08) ||
+      (prevScore >= 0.45 && currentHeadScore < 0.48)
+    ) {
       return {
         matchedSegmentIndex: safeCurrentIdx,
         similarityScore: currentScore,
@@ -313,13 +330,30 @@ export function findBestMatchingSegment(
   );
 
   // 現在セグメントの末尾付近、または指定された先行送りタイミング（advanceTriggerRatio）に到達したか
+  // ※ 前の文の文末（「〜ます」「〜です」等）だけが一致して誤って100%進捗にならないよう、
+  //    現在セグメントの前半〜中盤もある程度読まれていること（headOrBodyScore >= 0.42 または spokenNorm が6文字以上）を条件とする
+  const currentHeadLen = Math.max(
+    4,
+    Math.ceil(currentSeg.normalizedText.length * 0.65)
+  );
+  const currentHeadScore = evaluateSpokenAgainstSegment(
+    spokenNorm,
+    currentSeg.normalizedText.slice(0, currentHeadLen)
+  );
+  const hasStartedReadingCurrent =
+    currentSeg.normalizedText.length <= 10 ||
+    currentHeadScore >= 0.42 ||
+    spokenNorm.length >= Math.min(10, Math.floor(currentSeg.normalizedText.length * 0.45));
+
   const tailOfCurrent = currentSeg.normalizedText.slice(-8);
   const isNearEndOfCurrent =
-    (tailOfCurrent.length >= 3 &&
+    hasStartedReadingCurrent &&
+    ((tailOfCurrent.length >= 3 &&
+      spokenNorm.length >= 5 &&
       computeBigramDiceSimilarity(spokenNorm.slice(-8), tailOfCurrent) >=
-        0.60) ||
-    (currentScore >= baseThreshold * 0.82 &&
-      progressRatio >= effectiveTriggerRatio);
+        0.65) ||
+      (currentScore >= baseThreshold * 0.85 &&
+        progressRatio >= effectiveTriggerRatio));
 
   let bestIdx = safeCurrentIdx;
   let bestWeightedScore = currentScore;
@@ -406,13 +440,35 @@ export function findBestMatchingSegment(
 
   // 2. 直後の1〜2フレーズへの通常進行
   if (delta === 1 || delta === 2) {
-    const requiredScore = delta === 1 ? baseThreshold : baseThreshold + 0.08;
-    if (bestRawScore >= requiredScore) {
+    // 途中認識(interim)での2行一気飛ばし（delta === 2）は誤爆しやすいため、
+    // isFinal確定時、または12文字以上で非常に高い類似度（>= 0.80）かつ現在セグメントより明確に高い場合のみ許可する
+    if (delta === 2) {
+      const canSkipOneOnInterim =
+        spokenNorm.length >= 12 &&
+        bestRawScore >= Math.max(0.80, baseThreshold + 0.20) &&
+        bestRawScore > currentScore + 0.18;
+      if (
+        (isFinal &&
+          spokenNorm.length >= 7 &&
+          bestRawScore >= baseThreshold + 0.14 &&
+          bestRawScore > currentScore + 0.12) ||
+        canSkipOneOnInterim
+      ) {
+        return {
+          matchedSegmentIndex: bestIdx,
+          similarityScore: bestRawScore,
+          progressRatio,
+          distanceFromCurrent: delta,
+          shouldAdvance: true,
+          reason: 'local-advance',
+        };
+      }
+    } else if (delta === 1 && bestRawScore >= baseThreshold) {
       return {
         matchedSegmentIndex: bestIdx,
         similarityScore: bestRawScore,
         progressRatio,
-        distanceFromCurrent: delta,
+        distanceFromCurrent: 1,
         shouldAdvance: true,
         reason: 'local-advance',
       };
@@ -420,11 +476,17 @@ export function findBestMatchingSegment(
   }
 
   // 3. 大きな前方移動（飛ばし読み・次の段落へのジャンプ: delta >= 3）
-  // 4.3.6 大きな位置移動には、より高い一致度を要求する
+  // 4.3.6 大きな位置移動には、より高い一致度を要求する（途中認識での複数行暴走ジャンプを防止）
   if (delta >= 3) {
-    const jumpThreshold = Math.min(0.85, baseThreshold + 0.22);
-    // 十分な文字数（6文字以上）かつ高類似度のときのみジャンプを許可
-    if (spokenNorm.length >= 6 && bestRawScore >= jumpThreshold) {
+    const jumpThreshold = Math.min(0.88, baseThreshold + 0.26);
+    const canJumpOnInterim = spokenNorm.length >= 15 && bestRawScore >= 0.86;
+    // 十分な文字数（10文字以上）かつ高類似度のときのみジャンプを許可
+    if (
+      (isFinal || canJumpOnInterim) &&
+      spokenNorm.length >= 10 &&
+      bestRawScore >= jumpThreshold &&
+      bestRawScore > currentScore + 0.22
+    ) {
       return {
         matchedSegmentIndex: bestIdx,
         similarityScore: bestRawScore,
