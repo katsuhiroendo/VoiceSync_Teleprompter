@@ -1,4 +1,4 @@
-import { ScriptSegment } from '@/types/prompter';
+import { LookaheadLinesPreset, ScriptSegment } from '@/types/prompter';
 
 const KANJI_VARIANT_DICTIONARY: Array<[RegExp, string]> = [
   [/皆さん/g, 'みなさん'],
@@ -149,4 +149,72 @@ export function parseScriptToSegments(content: string): ScriptSegment[] {
   });
 
   return segments;
+}
+
+export type SegmentVisualTier = 'current' | 'lookahead' | 'dimmed';
+
+export interface SegmentDisplayHierarchy {
+  tier: SegmentVisualTier;
+  opacity: number;
+  lookaheadOffset: number; // 0 for current, 1..3 for lookahead, -1 otherwise
+}
+
+/**
+ * Phase 4 (Section 6.2 & 6.4):
+ * 現在フレーズ・先読みフレーズ（1〜3）・それ以外のフレーズの視覚的3段階階層を計算する。
+ * フォントサイズや余白を変えずに不透明度 (opacity) のみで階層を作るため、レイアウトのガタつきが発生しない。
+ */
+export function computeSegmentDisplayHierarchy(params: {
+  segmentIndex: number;
+  activeSegmentIndex: number;
+  focusMode: boolean;
+  lookaheadCount: LookaheadLinesPreset;
+  lookaheadOpacity: number;
+  dimOpacity: number;
+}): SegmentDisplayHierarchy {
+  const {
+    segmentIndex,
+    activeSegmentIndex,
+    focusMode,
+    lookaheadCount,
+    lookaheadOpacity,
+    dimOpacity,
+  } = params;
+
+  if (segmentIndex === activeSegmentIndex) {
+    return {
+      tier: 'current',
+      opacity: 1,
+      lookaheadOffset: 0,
+    };
+  }
+
+  if (!focusMode) {
+    return {
+      tier: 'dimmed',
+      opacity: 1,
+      lookaheadOffset: -1,
+    };
+  }
+
+  const aheadOffset = segmentIndex - activeSegmentIndex;
+  if (lookaheadCount > 0 && aheadOffset >= 1 && aheadOffset <= lookaheadCount) {
+    // Graduated intermediate brightness: e.g. +1 = lookaheadOpacity (68%), +2 = 60%, +3 = 52% (never below dimOpacity + 0.08)
+    const stepDecay = (aheadOffset - 1) * 0.08;
+    const clampedOpacity = Math.max(
+      Math.min(0.95, dimOpacity + 0.08),
+      Math.min(0.95, lookaheadOpacity - stepDecay)
+    );
+    return {
+      tier: 'lookahead',
+      opacity: Number(clampedOpacity.toFixed(2)),
+      lookaheadOffset: aheadOffset,
+    };
+  }
+
+  return {
+    tier: 'dimmed',
+    opacity: dimOpacity,
+    lookaheadOffset: -1,
+  };
 }

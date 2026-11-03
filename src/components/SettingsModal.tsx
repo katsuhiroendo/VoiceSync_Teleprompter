@@ -637,24 +637,86 @@ export function SettingsModal({
                   />
                 </div>
 
-                <div className="space-y-2 border-t border-zinc-800 pt-3">
-                  <div className="flex justify-between text-xs">
-                    <span className="text-zinc-400">周囲の文章の明るさ</span>
-                    <span className="font-mono text-sky-400">
-                      {Math.round(settings.dimOpacity * 100)}%
+                <div className="space-y-3 border-t border-zinc-800 pt-3">
+                  {/* Phase 4 (Section 6.3): 先読み表示フレーズ数 & 先読み輝度 */}
+                  <div className="space-y-1.5">
+                    <span className="block text-xs text-zinc-300">
+                      次の文章の先読み表示（中間輝度で事前表示）
                     </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(
+                        [
+                          { count: 0, label: 'OFF' },
+                          { count: 1, label: '次の1フレーズ' },
+                          { count: 2, label: '次の2フレーズ (標準)' },
+                          { count: 3, label: '次の3フレーズ' },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.count}
+                          type="button"
+                          onClick={() =>
+                            onUpdateSettings({ lookaheadCount: opt.count })
+                          }
+                          className={`rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
+                            settings.lookaheadCount === opt.count
+                              ? 'bg-sky-500 text-white'
+                              : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <input
-                    type="range"
-                    min={0.12}
-                    max={0.75}
-                    step={0.02}
-                    value={settings.dimOpacity}
-                    onChange={(e) =>
-                      onUpdateSettings({ dimOpacity: Number(e.target.value) })
-                    }
-                    className="w-full accent-sky-500"
-                  />
+
+                  {settings.lookaheadCount > 0 && (
+                    <div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-zinc-400">
+                          先読みフレーズの明るさ
+                        </span>
+                        <span className="font-mono text-sky-400">
+                          {Math.round(settings.lookaheadOpacity * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.35}
+                        max={0.92}
+                        step={0.02}
+                        value={settings.lookaheadOpacity}
+                        onChange={(e) =>
+                          onUpdateSettings({
+                            lookaheadOpacity: Number(e.target.value),
+                          })
+                        }
+                        className="w-full accent-sky-500"
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-zinc-400">
+                        それ以外の周囲の文章の明るさ
+                      </span>
+                      <span className="font-mono text-sky-400">
+                        {Math.round(settings.dimOpacity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.12}
+                      max={0.75}
+                      step={0.02}
+                      value={settings.dimOpacity}
+                      onChange={(e) =>
+                        onUpdateSettings({ dimOpacity: Number(e.target.value) })
+                      }
+                      className="w-full accent-sky-500"
+                    />
+                  </div>
 
                   <label className="flex items-center justify-between pt-1 text-xs text-zinc-300">
                     <span>現在位置の細いガイドラインを表示</span>

@@ -11,8 +11,9 @@ import {
   NGMarkerType,
 } from '@/types/prompter';
 import {
-   parseScriptToSegments,
+  parseScriptToSegments,
   normalizeTextForMatching,
+  computeSegmentDisplayHierarchy,
 } from '@/lib/scriptParser';
 import {
   SpeechRecognitionController,
@@ -2325,11 +2326,14 @@ export function TeleprompterStage({
                 idx > 0 &&
                 segments[idx - 1].paragraphIndex !== seg.paragraphIndex;
 
-              const opacity = settings.focusMode
-                ? isCurrent
-                  ? 1
-                  : settings.dimOpacity
-                : 1;
+              const { tier, opacity } = computeSegmentDisplayHierarchy({
+                segmentIndex: idx,
+                activeSegmentIndex,
+                focusMode: settings.focusMode,
+                lookaheadCount: settings.lookaheadCount ?? 2,
+                lookaheadOpacity: settings.lookaheadOpacity ?? 0.68,
+                dimOpacity: settings.dimOpacity,
+              });
 
               return (
                 <div
@@ -2346,7 +2350,9 @@ export function TeleprompterStage({
                   } ${
                     isCurrent
                       ? 'bg-white/[0.04] ring-1 ring-sky-400/25'
-                      : 'hover:opacity-75'
+                      : tier === 'lookahead'
+                        ? 'bg-white/[0.015] ring-1 ring-white/[0.06]'
+                        : 'hover:opacity-75'
                   }`}
                 >
                   {seg.text}
