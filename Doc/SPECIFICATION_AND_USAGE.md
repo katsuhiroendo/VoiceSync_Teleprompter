@@ -25,15 +25,16 @@
 
 ## 3. 起動方法・セットアップ手順
 
-### 3.1 GitHub Pages（Web公開版）での利用
-本リポジトリには GitHub Actions による静的エクスポート自動デプロイ（[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)）が設定されています。
+### 3.1 GitHub Pages（Web公開版）での利用とデプロイ手順
+本リポジトリには GitHub Actions による静的エクスポート自動デプロイ（[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml)）が設定されており、ワークフロー内の `actions/configure-pages@v5` (`enablement: true`) によって GitHub Pages の構成と公開が自動で行われます。
 
 - **公開URL**：`https://katsuhiroendo.github.io/VoiceSync_Teleprompter/`
-- **初回有効化手順（GitHub上での設定）**：
-  1. GitHubリポジトリ（`https://github.com/katsuhiroendo/VoiceSync_Teleprompter`）の **Settings** タブを開きます。
-  2. 左メニューの **Pages** をクリックします。
-  3. **Build and deployment ＞ Source** のプルダウンを `Deploy from a branch` から **`GitHub Actions`** に変更します。
-  4. `main` ブランチへのプッシュ時（または **Actions** タブから `Deploy VoiceSync Teleprompter to GitHub Pages` を手動実行した際）に自動でビルド・公開され、MacBook・iPad・スマートフォンから上記URLを開くだけでそのまま利用できます。
+- **初回有効化手順とエラー時（赤い `×` 表示）の対処法**：
+  1. **リポジトリの公開設定の確認**：無料の GitHub アカウントで GitHub Pages を利用する場合は、リポジトリが **Public** である必要があります（Private の場合は **Settings ＞ General ＞ Danger Zone ＞ Change repository visibility** から Public に変更してください）。
+  2. **Pages ソース設定の確認**：GitHubリポジトリ（`https://github.com/katsuhiroendo/VoiceSync_Teleprompter`）の上部メニュー **Settings** ＞ 左メニュー **Pages** を開き、**Build and deployment ＞ Source** が **`GitHub Actions`** になっていることを確認します（`Deploy from a branch` になっている場合は `GitHub Actions` に切り替えます）。
+  3. **ワークフローの再実行（Re-run）**：設定切り替え前に実行された Actions がエラー（×）になっていた場合は、上部メニューの **Actions** タブを開き、該当のワークフローを選択して右上の **「Re-run all jobs」** をクリックします。
+  4. **公開完了の確認**：`build` と `deploy` ジョブが緑色のチェックマーク（✓）になると、MacBook・iPad・スマートフォンのブラウザから上記公開URLを開くだけで、インストール不要ですぐに利用できます。
+  5. **以降の更新**：`main` ブランチへ `git push` するたびに、自動的に単体テスト（`npm test`）と本番ビルド（`npm run build`）が走り、最新バージョンが公開URLへ反映されます。
 
 ### 3.2 ローカル開発サーバーでの起動
 プロジェクトルートで以下のコマンドを実行します。
