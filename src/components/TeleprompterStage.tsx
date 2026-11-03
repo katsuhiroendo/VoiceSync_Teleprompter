@@ -214,6 +214,10 @@ export function TeleprompterStage({
     [animateScrollToTarget]
   );
 
+  // Keep track of the normalized transcript when we last advanced via early-trigger,
+  // so the remaining words of the previous phrase don't re-trigger another advance on the new phrase.
+  const lastAdvanceSpokenLengthRef = useRef<number>(0);
+
   // Process recognized speech (from microphone or debug simulator) and match against script
   const processRecognizedSpeech = useCallback(
     (event: SpeechTranscriptEvent) => {
@@ -221,8 +225,25 @@ export function TeleprompterStage({
       setIsInterimTranscript(!event.isFinal);
       setSpeechStatus('matching');
 
+      // If we recently advanced early during an ongoing interim stream, slice only the newly spoken tail
+      // or full transcript if a new resultIndex started.
+      let effectiveTranscript = event.transcript;
+      if (
+        !event.isFinal &&
+        lastAdvanceSpokenLengthRef.current > 0 &&
+        event.transcript.length > lastAdvanceSpokenLengthRef.current
+      ) {
+        effectiveTranscript = event.transcript.slice(
+          Math.max(0, lastAdvanceSpokenLengthRef.current - 4)
+        );
+      } else if (
+        event.transcript.length < lastAdvanceSpokenLengthRef.current
+      ) {
+        lastAdvanceSpokenLengthRef.current = 0;
+      }
+
       const evaluation = findBestMatchingSegment(
-        event.transcript,
+        effectiveTranscript,
         segmentsRef.current,
         {
           currentIndex: activeIndexRef.current,
@@ -241,6 +262,14 @@ export function TeleprompterStage({
         activeIndexRef.current = evaluation.matchedSegmentIndex;
         setActiveSegmentIndex(evaluation.matchedSegmentIndex);
         scrollToSegment(evaluation.matchedSegmentIndex);
+
+        if (evaluation.reason === 'early-trigger-advance' && !event.isFinal) {
+          lastAdvanceSpokenLengthRef.current = event.transcript.length;
+        } else {
+          lastAdvanceSpokenLengthRef.current = 0;
+        }
+      } else if (event.isFinal) {
+        lastAdvanceSpokenLengthRef.current = 0;
       }
 
       // Restore status badge to listening after brief matching indicator
@@ -860,18 +889,17 @@ export function TeleprompterStage({
               <span>リアルタイム音声認識・照合デバッグ</span>
             </div>
             <span className="font-mono text-[10px] text-zinc-400">
-              {script.language} | 感度 {Math.round(settings.trackingSensitivity * 100)}%
+              {script.language} | 感度 {Math.round(settings.trackingSensitivity * 100)}% | 先行送り {Math.round(settings.advanceTriggerRatio * 100)}%
             </span>
           </div>
 
           <div className="mt-2.5 space-y-2">
             <div className="rounded-xl bg-zinc-900/90 px-3 py-2">
-              <div className="flex items-center justify-between text-[10px] text-zinc-400">
-                <span>最新認識テキスト ({isInterimTranscript ? '途中結果 interim' : '確定 final'})</span>
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] text-zinc-400">
+                <span>最新認識 ({isInterimTranscript ? '途中 interim' : '確定 final'})</span>
                 {lastMatchResult && (
                   <span className="font-mono text-sky-400">
-                    類似度: {Math.round(lastMatchResult.similarityScore * 100)}% (
-                    {lastMatchResult.reason})
+                    類似度 {Math.round(lastMatchResult.similarityScore * 100)}% | フレーズ進捗 {Math.round(lastMatchResult.progressRatio * 100)}% ({lastMatchResult.reason})
                   </span>
                 )}
               </div>

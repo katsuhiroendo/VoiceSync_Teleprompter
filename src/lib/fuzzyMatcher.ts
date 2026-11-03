@@ -4,10 +4,12 @@ import { normalizeTextForMatching } from '@/lib/scriptParser';
 export interface MatchEvaluationResult {
   matchedSegmentIndex: number;
   similarityScore: number;     // 0.0 to 1.0
+  progressRatio: number;       // 0.0 to 1.0 (現在フレーズ内の到達位置比率)
   distanceFromCurrent: number; // signed segment delta (e.g., +1, -1, +4)
   shouldAdvance: boolean;
   reason:
     | 'local-advance'
+    | 'early-trigger-advance'
     | 'same-segment'
     | 'backtrack-reread'
     | 'forward-skip'
@@ -117,6 +119,8 @@ export interface FindBestSegmentOptions {
 
 /**
  * 発話(spokenNorm)が現在セグメント(segmentNorm)のどの位置（0.0〜1.0）まで到達しているかを推定する。
+ * 音声認識特有の漢字変換揺れ（例：原稿「維持」→ 認識「いじ」）があっても、
+ * 3〜8文字のマルチスケール窓と2文字Bigramの末尾位置から頑健に現在位置比率を算出する。
  */
 export function estimateSegmentProgressRatio(
   spokenNorm: string,
@@ -124,30 +128,80 @@ export function estimateSegmentProgressRatio(
 ): number {
   if (!spokenNorm || !segmentNorm) return 0;
 
-  const query = spokenNorm.slice(-Math.min(10, spokenNorm.length));
-  if (query.length < 2) return 0;
+  const segLen = segmentNorm.length;
+  if (segLen === 0) return 0;
 
-  // 完全一致する最後の位置を探す
-  const exactIdx = segmentNorm.lastIndexOf(query);
-  if (exactIdx !== -1) {
-    return (exactIdx + query.length) / segmentNorm.length;
-  }
+  let maxProgress = 0;
 
-  // スライディングウィンドウで最も類似度が高い終端位置を探す
-  const winLen = Math.min(segmentNorm.length, Math.max(3, query.length));
-  let bestScore = 0;
-  let bestEndOffset = 0;
+  // 1. 発話末尾の複数ウィンドウ長（3〜10文字）で完全一致または高類似度スライスを探索
+  const tailSource = spokenNorm.slice(-Math.min(14, spokenNorm.length));
+  const candidateLengths = [10, 8, 6, 5, 4, 3].filter(
+    (len) => len <= tailSource.length && len <= segLen
+  );
 
-  for (let pos = 0; pos <= segmentNorm.length - winLen; pos++) {
-    const slice = segmentNorm.slice(pos, pos + winLen);
-    const dice = computeBigramDiceSimilarity(query, slice);
-    if (dice >= bestScore && dice >= 0.6) {
-      bestScore = dice;
-      bestEndOffset = pos + winLen;
+  for (const len of candidateLengths) {
+    const tailQuery = tailSource.slice(-len);
+    const exactIdx = segmentNorm.lastIndexOf(tailQuery);
+    if (exactIdx !== -1) {
+      const ratio = (exactIdx + len) / segLen;
+      if (ratio > maxProgress) maxProgress = ratio;
+      break;
+    }
+
+    // 漢字揺れなどで完全一致しない場合はスライディングウィンドウでBigram類似度を評価
+    for (let pos = 0; pos <= segLen - len; pos++) {
+      const slice = segmentNorm.slice(pos, pos + len);
+      const dice = computeBigramDiceSimilarity(tailQuery, slice);
+      if (dice >= 0.48) {
+        const ratio = (pos + len) / segLen;
+        if (ratio > maxProgress) {
+          maxProgress = ratio;
+        }
+      }
     }
   }
 
-  return bestEndOffset / segmentNorm.length;
+  // 2. 直近発話（末尾6文字）に含まれる2文字Bigramがセグメント後半のどこに出現するかで補完
+  const recentTail = spokenNorm.slice(-Math.min(6, spokenNorm.length));
+  if (recentTail.length >= 2) {
+    let matchedBigrams = 0;
+    let latestBigramEnd = 0;
+    for (let i = 0; i < recentTail.length - 1; i++) {
+      const bg = recentTail.slice(i, i + 2);
+      const idx = segmentNorm.lastIndexOf(bg);
+      if (idx !== -1) {
+        matchedBigrams++;
+        if (idx + 2 > latestBigramEnd) {
+          latestBigramEnd = idx + 2;
+        }
+      }
+    }
+    // 2個以上のBigram（または短文なら1個以上）が一致していればその到達位置を採用
+    if (matchedBigrams >= 2 || (segLen <= 10 && matchedBigrams >= 1)) {
+      const bgRatio = latestBigramEnd / segLen;
+      if (bgRatio > maxProgress) {
+        maxProgress = bgRatio;
+      }
+    }
+  }
+
+  // 3. 発話全体の文字長比率による下限補完：
+  // 途中認識(interim)では未確定の語尾がすべてひらがな（例：「自然に維持」→「しぜんにいじ」）になることが多く、
+  // 原稿が漢字だと末尾の文字一致だけでは進捗率が過小評価されるため、
+  // セグメント前半と高い類似度（>= 0.55）で一致している場合は発話文字長比率（漢字1字≒ひらがな1.35字換算）も加味する
+  const headSlice = segmentNorm.slice(0, Math.min(segLen, spokenNorm.length + 4));
+  const headSim = computeBigramDiceSimilarity(
+    spokenNorm.slice(0, Math.min(10, spokenNorm.length)),
+    headSlice.slice(0, Math.min(10, headSlice.length))
+  );
+  if (headSim >= 0.5) {
+    const lengthBasedRatio = Math.min(0.95, (spokenNorm.length * 0.88) / segLen);
+    if (lengthBasedRatio > maxProgress) {
+      maxProgress = lengthBasedRatio;
+    }
+  }
+
+  return Math.min(1, maxProgress);
 }
 
 /**
@@ -175,6 +229,7 @@ export function findBestMatchingSegment(
     return {
       matchedSegmentIndex: 0,
       similarityScore: 0,
+      progressRatio: 0,
       distanceFromCurrent: 0,
       shouldAdvance: false,
       reason: 'low-confidence-hold',
@@ -192,6 +247,7 @@ export function findBestMatchingSegment(
     return {
       matchedSegmentIndex: safeCurrentIdx,
       similarityScore: 0,
+      progressRatio: 0,
       distanceFromCurrent: 0,
       shouldAdvance: false,
       reason: 'too-short-hold',
@@ -228,8 +284,9 @@ export function findBestMatchingSegment(
   const isNearEndOfCurrent =
     (tailOfCurrent.length >= 3 &&
       computeBigramDiceSimilarity(spokenNorm.slice(-8), tailOfCurrent) >=
-        0.65) ||
-    (currentScore >= baseThreshold && progressRatio >= effectiveTriggerRatio);
+        0.60) ||
+    (currentScore >= baseThreshold * 0.82 &&
+      progressRatio >= effectiveTriggerRatio);
 
   let bestIdx = safeCurrentIdx;
   let bestWeightedScore = currentScore;
@@ -280,12 +337,12 @@ export function findBestMatchingSegment(
 
   // 1. 同じセグメントに留まる場合
   if (delta === 0) {
-    // 確定結果(isFinal)で文末付近に到達した場合、またはユーザーが早め遷移(advanceTriggerRatio <= 0.80)を設定していて
+    // 確定結果(isFinal)で文末付近に到達した場合、またはユーザーが早め遷移(advanceTriggerRatio <= 0.90)を設定していて
     // 途中認識(interim)でも指定割合を通過した場合は、文末を言い切る前に次のセグメント・段落へ一歩進める
     const allowEarlyInterimAdvance =
-      effectiveTriggerRatio <= 0.80 &&
+      effectiveTriggerRatio <= 0.90 &&
       progressRatio >= effectiveTriggerRatio &&
-      currentScore >= baseThreshold + 0.08;
+      currentScore >= baseThreshold * 0.85;
 
     if (
       (isFinal || allowEarlyInterimAdvance) &&
@@ -295,15 +352,19 @@ export function findBestMatchingSegment(
       return {
         matchedSegmentIndex: safeCurrentIdx + 1,
         similarityScore: currentScore,
+        progressRatio,
         distanceFromCurrent: 1,
         shouldAdvance: true,
-        reason: 'local-advance',
+        reason: allowEarlyInterimAdvance
+          ? 'early-trigger-advance'
+          : 'local-advance',
       };
     }
 
     return {
       matchedSegmentIndex: safeCurrentIdx,
       similarityScore: currentScore,
+      progressRatio,
       distanceFromCurrent: 0,
       shouldAdvance: false,
       reason: 'same-segment',
@@ -317,6 +378,7 @@ export function findBestMatchingSegment(
       return {
         matchedSegmentIndex: bestIdx,
         similarityScore: bestRawScore,
+        progressRatio,
         distanceFromCurrent: delta,
         shouldAdvance: true,
         reason: 'local-advance',
@@ -333,6 +395,7 @@ export function findBestMatchingSegment(
       return {
         matchedSegmentIndex: bestIdx,
         similarityScore: bestRawScore,
+        progressRatio,
         distanceFromCurrent: delta,
         shouldAdvance: true,
         reason: 'forward-skip',
@@ -348,6 +411,7 @@ export function findBestMatchingSegment(
       return {
         matchedSegmentIndex: bestIdx,
         similarityScore: bestRawScore,
+        progressRatio,
         distanceFromCurrent: delta,
         shouldAdvance: true,
         reason: 'backtrack-reread',
@@ -359,6 +423,7 @@ export function findBestMatchingSegment(
   return {
     matchedSegmentIndex: safeCurrentIdx,
     similarityScore: bestRawScore,
+    progressRatio,
     distanceFromCurrent: 0,
     shouldAdvance: false,
     reason: 'low-confidence-hold',

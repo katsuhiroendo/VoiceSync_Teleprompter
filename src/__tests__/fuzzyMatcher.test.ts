@@ -172,31 +172,43 @@ describe('VoiceSync Fuzzy Matcher & 10 Required Test Cases (Section 14)', () => 
     expect(elapsedMs).toBeLessThan(25); // 25ms未満で完了すること
   });
 
-  it('Early Paragraph Advance: advances to next segment/paragraph earlier when advanceTriggerRatio is lowered (e.g. 0.50)', () => {
+  it('Early Paragraph Advance: advances to next segment/paragraph earlier when advanceTriggerRatio is lowered (e.g. 0.50 or 0.60)', () => {
     const seg2Idx = segments.findIndex((s) =>
       s.text.includes('今回の動画では')
     );
-    // Uttering only up to the middle of segment 2 ("今回の動画では、カメラ目線を自然に維持しながら") as an interim result
-    const midUtterance = '今回の動画ではカメラ目線を自然に維持しながら';
+    // Real-world interim speech recognition often has kanji-hiragana differences in the middle
+    // e.g.的原稿 "自然に維持しながら撮影できる" vs 認識結果 "しぜんにいじしながらさつえい" (around 62% of segment 2)
+    const midUtteranceWithKanjiVariation =
+      '今回の動画ではカメラ目線をしぜんにいじしながらさつえい';
 
     // With strict 0.95 ratio, it waits until the end of the sentence
-    const strictRes = findBestMatchingSegment(midUtterance, segments, {
-      currentIndex: seg2Idx,
-      sensitivity: defaultSensitivity,
-      advanceTriggerRatio: 0.95,
-      isFinal: false,
-    });
+    const strictRes = findBestMatchingSegment(
+      midUtteranceWithKanjiVariation,
+      segments,
+      {
+        currentIndex: seg2Idx,
+        sensitivity: defaultSensitivity,
+        advanceTriggerRatio: 0.95,
+        isFinal: false,
+      }
+    );
     expect(strictRes.shouldAdvance).toBe(false);
     expect(strictRes.matchedSegmentIndex).toBe(seg2Idx);
 
-    // With early 0.45 ratio, it advances to the next paragraph/segment immediately during interim speech
-    const earlyRes = findBestMatchingSegment(midUtterance, segments, {
-      currentIndex: seg2Idx,
-      sensitivity: defaultSensitivity,
-      advanceTriggerRatio: 0.45,
-      isFinal: false,
-    });
-    expect(earlyRes.shouldAdvance).toBe(true);
-    expect(earlyRes.matchedSegmentIndex).toBe(seg2Idx + 1);
+    // With 0.60 ratio (60% setting), it advances to the next paragraph/segment immediately during interim speech
+    const earlyRes60 = findBestMatchingSegment(
+      midUtteranceWithKanjiVariation,
+      segments,
+      {
+        currentIndex: seg2Idx,
+        sensitivity: defaultSensitivity,
+        advanceTriggerRatio: 0.60,
+        isFinal: false,
+      }
+    );
+    expect(earlyRes60.progressRatio).toBeGreaterThanOrEqual(0.55);
+    expect(earlyRes60.shouldAdvance).toBe(true);
+    expect(earlyRes60.matchedSegmentIndex).toBe(seg2Idx + 1);
+    expect(earlyRes60.reason).toBe('early-trigger-advance');
   });
 });
