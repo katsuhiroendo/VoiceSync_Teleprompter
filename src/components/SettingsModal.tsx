@@ -1,12 +1,24 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { PrompterSettings, DEFAULT_PROMPTER_SETTINGS } from '@/types/prompter';
+import {
+  PrompterSettings,
+  RecordingSessionMeta,
+} from '@/types/prompter';
 import {
   CameraDeviceOption,
   AudioDeviceOption,
   listMediaInputDevices,
+  formatDurationTimer,
 } from '@/lib/cameraRecorder';
+import {
+  StorageEstimateInfo,
+  estimateBrowserStorage,
+  getAllRecordingSessions,
+  reconstructSessionVideoBlob,
+  deleteRecordingSessionAndChunks,
+  formatBytesHuman,
+} from '@/lib/recordingStorage';
 import {
   X,
   RotateCcw,
@@ -23,6 +35,9 @@ import {
   Smartphone,
   Mic,
   RefreshCw,
+  HardDrive,
+  Download,
+  Trash2,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -44,6 +59,63 @@ export function SettingsModal({
   const [videoDevices, setVideoDevices] = useState<CameraDeviceOption[]>([]);
   const [audioDevices, setAudioDevices] = useState<AudioDeviceOption[]>([]);
   const [isScanningDevices, setIsScanningDevices] = useState<boolean>(false);
+  const [storageInfo, setStorageInfo] = useState<StorageEstimateInfo | null>(
+    null
+  );
+  const [savedSessions, setSavedSessions] = useState<RecordingSessionMeta[]>(
+    []
+  );
+  const [confirmDeleteSessionId, setConfirmDeleteSessionId] = useState<
+    string | null
+  >(null);
+  const [isExportingSessionId, setIsExportingSessionId] = useState<
+    string | null
+  >(null);
+
+  const refreshStorageAndSessions = async () => {
+    try {
+      const [est, sessions] = await Promise.all([
+        estimateBrowserStorage(),
+        getAllRecordingSessions(),
+      ]);
+      setStorageInfo(est);
+      setSavedSessions(sessions);
+    } catch {
+      // Ignore storage estimate failure
+    }
+  };
+
+  const handleDownloadSavedSession = async (session: RecordingSessionMeta) => {
+    setIsExportingSessionId(session.sessionId);
+    try {
+      const { blob } = await reconstructSessionVideoBlob(session.sessionId);
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const safeTitle =
+        (session.scriptTitle || 'voicesync_recording')
+          .trim()
+          .replace(/[\\/:*?"<>|]/g, '_') || 'voicesync_recording';
+      const timestamp = new Date(session.startedAt)
+        .toISOString()
+        .slice(0, 19)
+        .replace(/[:T]/g, '-');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${safeTitle}_${timestamp}.${session.extension || 'webm'}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } finally {
+      setIsExportingSessionId(null);
+    }
+  };
+
+  const handleDeleteSavedSession = async (sessionId: string) => {
+    await deleteRecordingSessionAndChunks(sessionId);
+    setConfirmDeleteSessionId(null);
+    await refreshStorageAndSessions();
+  };
 
   const handleScanDevices = async (requestPermission = false) => {
     setIsScanningDevices(true);
@@ -94,6 +166,7 @@ export function SettingsModal({
   useEffect(() => {
     if (isOpen) {
       handleScanDevices(false);
+      refreshStorageAndSessions();
     }
   }, [isOpen]);
 
@@ -1061,6 +1134,113 @@ export function SettingsModal({
                   ：USB接続または同一Apple IDで近づけると、『📱 iPhone カメラ』としてそのまま選択できます。
                 </li>
               </ul>
+            </div>
+
+            {/* Phase 6 (8.6 & 8.7): Saved Recording Sessions & Browser Storage Management */}
+            <div className="space-y-3 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
+                  <HardDrive className="h-4 w-4 text-sky-400" />
+                  <span>録画データ保護・ブラウザ保存容量管理 (IndexedDB)</span>
+                </div>
+                {storageInfo && storageInfo.supported && (
+                  <span
+                    className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] ${
+                      storageInfo.isLowStorageWarning
+                        ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
+                        : 'border-zinc-700 bg-zinc-950 text-zinc-400'
+                    }`}
+                  >
+                    使用中 {formatBytesHuman(storageInfo.usageBytes)} / 推定空き{' '}
+                    {formatBytesHuman(storageInfo.availableBytes)} (
+                    {(storageInfo.usageRatio * 100).toFixed(1)}%)
+                  </span>
+                )}
+              </div>
+
+              <p className="text-[11px] text-zinc-400">
+                撮影中の動画はメモリ圧迫や異常終了に備え、5秒ごとにIndexedDBへ自動分割保存されます。不要になった過去の録画データはここから削除して容量を空けることができます。
+              </p>
+
+              {savedSessions.length === 0 ? (
+                <div className="rounded-lg border border-zinc-800/60 bg-zinc-950/60 px-3 py-2.5 text-center text-[11px] text-zinc-500">
+                  保存されている録画セッションはありません。
+                </div>
+              ) : (
+                <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
+                  {savedSessions.map((sess) => (
+                    <div
+                      key={sess.sessionId}
+                      className="flex flex-col justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-950/80 p-2.5 text-xs sm:flex-row sm:items-center"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate font-semibold text-zinc-200">
+                            {sess.scriptTitle || '無題の原稿'}
+                          </span>
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                              sess.status === 'completed'
+                                ? 'bg-emerald-500/20 text-emerald-300'
+                                : 'bg-amber-500/20 text-amber-300'
+                            }`}
+                          >
+                            {sess.status === 'completed' ? '完了' : '未完了・復旧可'}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[10px] text-zinc-400">
+                          {new Date(sess.startedAt).toLocaleString('ja-JP')} ・{' '}
+                          {formatDurationTimer(sess.durationSec)} ・{' '}
+                          {sess.chunkCount}チャンク (
+                          {formatBytesHuman(sess.totalBytes)})
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={
+                            sess.chunkCount === 0 ||
+                            isExportingSessionId === sess.sessionId
+                          }
+                          onClick={() => handleDownloadSavedSession(sess)}
+                          className="flex items-center gap-1 rounded-lg bg-sky-500/20 px-2.5 py-1.5 text-[11px] font-semibold text-sky-300 transition hover:bg-sky-500/30 disabled:opacity-40"
+                        >
+                          <Download className="h-3 w-3" />
+                          <span>
+                            {isExportingSessionId === sess.sessionId
+                              ? '結合中...'
+                              : '動画保存'}
+                          </span>
+                        </button>
+
+                        {confirmDeleteSessionId === sess.sessionId ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleDeleteSavedSession(sess.sessionId)
+                            }
+                            className="rounded-lg bg-rose-600 px-2.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-rose-500"
+                          >
+                            削除確定
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setConfirmDeleteSessionId(sess.sessionId)
+                            }
+                            className="rounded-lg border border-zinc-800 bg-zinc-900 p-1.5 text-zinc-400 transition hover:border-rose-500/40 hover:text-rose-300"
+                            title="この録画セッションデータを削除"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
         </div>

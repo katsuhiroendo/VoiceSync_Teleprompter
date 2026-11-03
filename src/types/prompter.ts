@@ -35,6 +35,55 @@ export type CameraPreviewMode = 'pip' | 'backdrop' | 'hidden';
 export type CameraResolutionPreset = '1080p' | '4k' | '720p';
 export type CameraAspectRatioPreset = '16:9' | '9:16';
 
+export type CountdownSecondsPreset = 0 | 3 | 5 | 10;
+export type LookaheadLinesPreset = 0 | 1 | 2 | 3;
+
+export type NGMarkerType =
+  | 'ng'
+  | 'retake-start'
+  | 'retake-complete'
+  | 'edit-note';
+
+export interface NGMarkerItem {
+  id: string;
+  sessionId: string;
+  elapsedMs: number;          // 録画開始からの実経過ミリ秒（一時停止時間を除く）
+  timecode: string;           // "00:01:23.4" or "01:23"
+  scriptId: string;
+  segmentId: string;
+  segmentIndex: number;       // 0-based フレーズインデックス
+  paragraphIndex: number;     // 0-based 段落インデックス
+  segmentText: string;        // 該当フレーズ本文
+  type: NGMarkerType;
+  note: string;
+  createdAt: number;
+}
+
+export type RecordingSessionStatus =
+  | 'recording'
+  | 'completed'
+  | 'interrupted'
+  | 'failed';
+
+export interface RecordingSessionMeta {
+  sessionId: string;
+  scriptId: string;
+  scriptTitle: string;
+  startedAt: number;
+  updatedAt: number;
+  status: RecordingSessionStatus;
+  videoDeviceLabel: string;
+  audioDeviceLabel: string;
+  resolution: CameraResolutionPreset;
+  aspectRatio: CameraAspectRatioPreset;
+  mimeType: string;
+  extension: 'mp4' | 'webm';
+  chunkCount: number;
+  totalBytes: number;
+  durationSec: number;
+  markers: NGMarkerItem[];
+}
+
 export interface PrompterSettings {
   // 5. 表示設定 (Display settings)
   fontSize: number;             // 16〜100px
@@ -43,7 +92,7 @@ export interface PrompterSettings {
   backgroundColor: string;      // 背景色 (default: #09090B)
   contentWidthPercent: number;  // 文字表示領域の幅 (30〜100%)
   marginHorizontalPx: number;   // 左右余白 (0〜200px)
-  marginVerticalVh: number;     // 上下余白 (10〜50vh)
+  marginVerticalVh: number;     // 上下余白 (0〜50vh)
   textAlign: 'left' | 'center' | 'right'; // テキストの左右中央揃え
   mirrorHorizontal: boolean;    // 左右反転表示 (ハーフミラー用)
   mirrorVertical: boolean;      // 上下反転表示
@@ -53,13 +102,15 @@ export interface PrompterSettings {
   eyelineHeightVh: number;      // 表示領域の高さ (20〜100vh)
   eyelineTopOffsetVh: number;   // 上端からの位置オフセット (0〜40vh)
 
-  // フォーカスモード (Focus mode)
+  // フォーカスモード & 先読み表示 (Focus mode & Lookahead)
   focusMode: boolean;           // 現在読み上げている文章を明るく、それ以外を暗く
-  dimOpacity: number;           // フォーカス外の不透明度 (0.15〜0.7)
+  dimOpacity: number;           // フォーカス外の不透明度 (0.12〜0.75)
+  lookaheadCount: LookaheadLinesPreset; // 先読み表示フレーズ数: 0(OFF) | 1 | 2(標準) | 3
+  lookaheadOpacity: number;     // 先読みフレーズの明るさ (0.45〜0.92, 標準0.68)
   showGuideLine: boolean;       // 現在位置を示す細いガイドライン表示
 
   // 4.4 自動スクロール & 一定速度設定 (Scroll & Voice Tracking settings)
-  readingLinePositionVh: number; // 読み上げ位置の表示高さ (15〜60% from viewport top)
+  readingLinePositionVh: number; // 読み上げ位置の表示高さ (2〜60% from viewport top)
   constantScrollSpeed: number;   // 一定速度スクロールの速度 (10〜300 px/sec)
   scrollSmoothness: number;      // スクロールの滑らかさ (減衰係数 0.05〜0.3)
   trackingSensitivity: number;   // 追従感度 (0.3〜0.9: 類似度しきい値調整)
@@ -78,6 +129,12 @@ export interface PrompterSettings {
   preferredAudioDeviceId: string;               // 選択されたマイクデバイスID (空文字でシステム標準)
   cameraResolution: CameraResolutionPreset;     // '1080p' | '4k' | '720p'
   cameraAspectRatio: CameraAspectRatioPreset;   // '16:9' (通常YouTube) | '9:16' (ショート動画)
+
+  // Phase 1: 撮影開始カウントダウン設定
+  countdownSeconds: CountdownSecondsPreset;     // 0 | 3(標準) | 5 | 10
+  countdownBeepEnabled: boolean;                // カウントダウン音のON/OFF (標準OFF)
+  recStartBeepEnabled: boolean;                 // REC開始通知音のON/OFF (標準OFF)
+  postRecordSilentWaitSec: number;              // 録画開始後の無音待機時間 (0〜3秒, 標準0)
 }
 
 export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
@@ -98,6 +155,8 @@ export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
 
   focusMode: true,
   dimOpacity: 0.28,
+  lookaheadCount: 2,
+  lookaheadOpacity: 0.68,
   showGuideLine: true,
 
   readingLinePositionVh: 32,
@@ -118,4 +177,9 @@ export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
   preferredAudioDeviceId: '',
   cameraResolution: '1080p',
   cameraAspectRatio: '16:9',
+
+  countdownSeconds: 3,
+  countdownBeepEnabled: false,
+  recStartBeepEnabled: false,
+  postRecordSilentWaitSec: 0,
 };

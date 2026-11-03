@@ -5,9 +5,11 @@ import {
 } from '@/types/prompter';
 
 const DB_NAME = 'VoiceSyncTeleprompterDB';
-const DB_VERSION = 1;
-const SCRIPTS_STORE = 'scripts';
-const SETTINGS_STORE = 'settings';
+const DB_VERSION = 2;
+export const SCRIPTS_STORE = 'scripts';
+export const SETTINGS_STORE = 'settings';
+export const RECORDING_SESSIONS_STORE = 'recording_sessions';
+export const RECORDING_CHUNKS_STORE = 'recording_chunks';
 const SETTINGS_KEY = 'user_prompter_settings';
 
 export const DEFAULT_SAMPLE_SCRIPTS: ScriptItem[] = [
@@ -52,7 +54,7 @@ Let's dive right in and explore how it works in real-world studio and outdoor en
   },
 ];
 
-function openDB(): Promise<IDBDatabase> {
+export function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined' || !('indexedDB' in window)) {
       reject(new Error('IndexedDB is not available in this environment'));
@@ -63,12 +65,27 @@ function openDB(): Promise<IDBDatabase> {
 
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
+      // V1 stores (preserve all existing data)
       if (!db.objectStoreNames.contains(SCRIPTS_STORE)) {
         const store = db.createObjectStore(SCRIPTS_STORE, { keyPath: 'id' });
         store.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
       if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
         db.createObjectStore(SETTINGS_STORE);
+      }
+      // V2 stores for Phase 6 long-recording progressive chunk saving & crash recovery
+      if (!db.objectStoreNames.contains(RECORDING_SESSIONS_STORE)) {
+        const sessionStore = db.createObjectStore(RECORDING_SESSIONS_STORE, {
+          keyPath: 'sessionId',
+        });
+        sessionStore.createIndex('startedAt', 'startedAt', { unique: false });
+        sessionStore.createIndex('status', 'status', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(RECORDING_CHUNKS_STORE)) {
+        const chunkStore = db.createObjectStore(RECORDING_CHUNKS_STORE, {
+          keyPath: 'chunkKey',
+        });
+        chunkStore.createIndex('sessionId', 'sessionId', { unique: false });
       }
     };
 

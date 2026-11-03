@@ -6,6 +6,7 @@ import {
   PrompterSettings,
   ScrollMode,
   SpeechStatus,
+  RecordingSessionMeta,
 } from '@/types/prompter';
 import {
    parseScriptToSegments,
@@ -30,6 +31,15 @@ import {
   buildVideoTrackConstraints,
   formatDurationTimer,
 } from '@/lib/cameraRecorder';
+import {
+  ProgressiveRecordingSessionWriter,
+  StorageEstimateInfo,
+  estimateBrowserStorage,
+  detectRecoverableSessions,
+  reconstructSessionVideoBlob,
+  deleteRecordingSessionAndChunks,
+  formatBytesHuman,
+} from '@/lib/recordingStorage';
 import {
   Play,
   Pause,
@@ -59,6 +69,8 @@ import {
   Download,
   Layers,
   Smartphone,
+  HardDrive,
+  Trash2,
 } from 'lucide-react';
 
 interface TeleprompterStageProps {
@@ -157,9 +169,30 @@ export function TeleprompterStage({
     null
   );
 
+  // Phase 6: Long-Recording Progressive Session & Crash Recovery State
+  const [activeSessionMeta, setActiveSessionMeta] =
+    useState<RecordingSessionMeta | null>(null);
+  const [pendingChunkWrites, setPendingChunkWrites] = useState<number>(0);
+  const [isSavingRecording, setIsSavingRecording] = useState<boolean>(false);
+  const [storageInfo, setStorageInfo] = useState<StorageEstimateInfo | null>(
+    null
+  );
+  const [recoverableSessions, setRecoverableSessions] = useState<
+    RecordingSessionMeta[]
+  >([]);
+  const [confirmDeleteRecoveryId, setConfirmDeleteRecoveryId] = useState<
+    string | null
+  >(null);
+  const [wakeLockSupported, setWakeLockSupported] = useState<boolean>(true);
+
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
+  const sessionWriterRef = useRef<ProgressiveRecordingSessionWriter | null>(
+    null
+  );
+  const wakeLockSentinelRef = useRef<{ release: () => Promise<void> } | null>(
+    null
+  );
   const recordingStartMsRef = useRef<number>(0);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -665,13 +698,164 @@ export function TeleprompterStage({
     startCameraStream,
   ]);
 
-  // Start video recording on the MacBook camera
+  // Phase 6: Check storage estimate & detect unfinished crash-recovery sessions on mount
+  useEffect(() => {
+    let mounted = true;
+    async function checkStorageAndRecovery() {
+      const [est, unfinished] = await Promise.all([
+        estimateBrowserStorage(),
+        detectRecoverableSessions(),
+      ]);
+      if (!mounted) return;
+      setStorageInfo(est);
+      if (unfinished.length > 0) {
+        setRecoverableSessions(unfinished);
+      }
+    }
+    checkStorageAndRecovery();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Phase 6 (8.8): Warn before unloading page during active recording & manage Wake Lock
+  useEffect(() => {
+    if (cameraStatus !== 'recording') {
+      if (wakeLockSentinelRef.current) {
+        wakeLockSentinelRef.current.release().catch(() => {});
+        wakeLockSentinelRef.current = null;
+      }
+      return;
+    }
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue =
+        '現在カメラ録画中です。ページを離れると撮影が中断されます。';
+      return e.returnValue;
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    // Request Screen Wake Lock if supported
+    const navWithWakeLock = navigator as Navigator & {
+      wakeLock?: {
+        request: (
+          type: 'screen'
+        ) => Promise<{ release: () => Promise<void> }>;
+      };
+    };
+    if (navWithWakeLock.wakeLock?.request) {
+      navWithWakeLock.wakeLock
+        .request('screen')
+        .then((sentinel) => {
+          wakeLockSentinelRef.current = sentinel;
+        })
+        .catch(() => {
+          setWakeLockSupported(false);
+        });
+    } else {
+      setWakeLockSupported(false);
+    }
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (wakeLockSentinelRef.current) {
+        wakeLockSentinelRef.current.release().catch(() => {});
+        wakeLockSentinelRef.current = null;
+      }
+    };
+  }, [cameraStatus]);
+
+  // Recover a previous unfinished recording session from IndexedDB chunks
+  const handleRecoverSession = useCallback(
+    async (session: RecordingSessionMeta) => {
+      setIsSavingRecording(true);
+      try {
+        const { blob, error } = await reconstructSessionVideoBlob(
+          session.sessionId
+        );
+        if (!blob || error) {
+          setCameraError(
+            error || '録画データの復旧に失敗しました。データが不完全な可能性があります。'
+          );
+          return;
+        }
+        if (recordedClip?.url) {
+          URL.revokeObjectURL(recordedClip.url);
+        }
+        const url = URL.createObjectURL(blob);
+        setRecordedClip({
+          url,
+          blob,
+          mimeType: session.mimeType || 'video/webm',
+          extension: session.extension || 'webm',
+          durationSec: Math.max(1, session.durationSec),
+          createdAt: session.startedAt,
+        });
+        setActiveSessionMeta(session);
+        setRecoverableSessions((prev) =>
+          prev.filter((s) => s.sessionId !== session.sessionId)
+        );
+      } finally {
+        setIsSavingRecording(false);
+      }
+    },
+    [recordedClip?.url]
+  );
+
+  const handleDeleteRecoverableSession = useCallback(
+    async (sessionId: string) => {
+      await deleteRecordingSessionAndChunks(sessionId);
+      setRecoverableSessions((prev) =>
+        prev.filter((s) => s.sessionId !== sessionId)
+      );
+      setConfirmDeleteRecoveryId(null);
+      const est = await estimateBrowserStorage();
+      setStorageInfo(est);
+    },
+    []
+  );
+
+  // Start video recording on the MacBook / USB Smartphone camera with progressive 5s chunk saving (Phase 6)
   const handleStartVideoRecording = useCallback(async () => {
     let stream = cameraStreamRef.current;
     if (!stream || cameraStatus === 'off' || cameraStatus === 'error') {
       stream = await startCameraStream();
     }
     if (!stream) return;
+
+    // Pre-recording storage check (8.7)
+    const est = await estimateBrowserStorage();
+    setStorageInfo(est);
+    if (est.isLowStorageWarning) {
+      setCameraError(
+        `ブラウザの推定空き容量が少なくなっています（残り約 ${formatBytesHuman(
+          est.availableBytes
+        )}）。長時間録画では保存領域が不足する可能性があります。`
+      );
+    }
+
+    // Monitor unexpected camera or microphone track disconnection during recording (8.8)
+    stream.getVideoTracks().forEach((track) => {
+      track.onended = () => {
+        setCameraError(
+          '⚠️ カメラの接続が切断されました（USBケーブル抜け等）。そこまでの録画データは自動保存されています。'
+        );
+        if (
+          mediaRecorderRef.current &&
+          mediaRecorderRef.current.state !== 'inactive'
+        ) {
+          mediaRecorderRef.current.stop();
+        }
+      };
+    });
+    stream.getAudioTracks().forEach((track) => {
+      track.onended = () => {
+        setCameraError(
+          '⚠️ マイクの接続が切断されました。音声入力を確認してください。'
+        );
+      };
+    });
 
     // Clean up previous recorded blob URL if present
     if (recordedClip?.url) {
@@ -680,7 +864,46 @@ export function TeleprompterStage({
     }
 
     const { mimeType, extension } = selectSupportedVideoMimeType();
-    recordedChunksRef.current = [];
+    const videoLabel =
+      stream.getVideoTracks()[0]?.label ||
+      videoDevices.find((d) => d.deviceId === selectedDeviceId)?.label ||
+      'カメラ';
+    const audioLabel =
+      stream.getAudioTracks()[0]?.label ||
+      audioDevices.find((a) => a.deviceId === selectedAudioDeviceId)?.label ||
+      'マイク';
+
+    const sessionWriter = new ProgressiveRecordingSessionWriter(
+      {
+        scriptId: script.id,
+        scriptTitle: script.title,
+        videoDeviceLabel: videoLabel,
+        audioDeviceLabel: audioLabel,
+        resolution: settingsRef.current.cameraResolution,
+        aspectRatio: settingsRef.current.cameraAspectRatio,
+        mimeType: mimeType || 'video/webm',
+        extension,
+      },
+      {
+        onProgress: (meta, pendingCount) => {
+          setActiveSessionMeta(meta);
+          setPendingChunkWrites(pendingCount);
+        },
+        onQueueBacklogWarning: (pendingCount) => {
+          setPendingChunkWrites(pendingCount);
+          setCameraError(
+            `録画データのストレージ書き込みが遅延しています（待機チャンク: ${pendingCount}件）。タブを閉じずにお待ちください。`
+          );
+        },
+        onWriteError: (msg) => {
+          setCameraError(msg);
+        },
+      }
+    );
+
+    await sessionWriter.initializeSession();
+    sessionWriterRef.current = sessionWriter;
+    setActiveSessionMeta(sessionWriter.getMeta());
 
     try {
       const recorder = mimeType
@@ -689,33 +912,51 @@ export function TeleprompterStage({
 
       recorder.ondataavailable = (ev: BlobEvent) => {
         if (ev.data && ev.data.size > 0) {
-          recordedChunksRef.current.push(ev.data);
+          const elapsedSec = Math.max(
+            1,
+            Math.round((Date.now() - recordingStartMsRef.current) / 1000)
+          );
+          sessionWriter.enqueueChunk(ev.data, elapsedSec);
         }
       };
 
-      recorder.onstop = () => {
-        const finalMime =
-          recorder.mimeType || mimeType || 'video/webm';
-        const blob = new Blob(recordedChunksRef.current, {
-          type: finalMime,
-        });
-        const url = URL.createObjectURL(blob);
+      recorder.onstop = async () => {
+        setIsSavingRecording(true);
         const durationSec = Math.max(
           1,
           Math.round((Date.now() - recordingStartMsRef.current) / 1000)
         );
-        setRecordedClip({
-          url,
-          blob,
-          mimeType: finalMime,
-          extension: finalMime.includes('mp4') ? 'mp4' : extension,
-          durationSec,
-          createdAt: Date.now(),
-        });
-        setCameraStatus(cameraStreamRef.current ? 'ready' : 'off');
+        try {
+          const finalMeta = await sessionWriter.finalizeSession(durationSec);
+          setActiveSessionMeta(finalMeta);
+          setPendingChunkWrites(0);
+
+          const { blob } = await reconstructSessionVideoBlob(
+            finalMeta.sessionId
+          );
+          if (blob) {
+            const finalMime =
+              recorder.mimeType || mimeType || 'video/webm';
+            const url = URL.createObjectURL(blob);
+            setRecordedClip({
+              url,
+              blob,
+              mimeType: finalMime,
+              extension: finalMime.includes('mp4') ? 'mp4' : extension,
+              durationSec,
+              createdAt: finalMeta.startedAt,
+            });
+          }
+          const updatedEst = await estimateBrowserStorage();
+          setStorageInfo(updatedEst);
+        } finally {
+          setIsSavingRecording(false);
+          setCameraStatus(cameraStreamRef.current ? 'ready' : 'off');
+        }
       };
 
-      recorder.start(1000);
+      // Phase 6 (8.2): Use 5-second timeslice (5000ms) for progressive chunk saving without holding all video in RAM
+      recorder.start(5000);
       mediaRecorderRef.current = recorder;
       recordingStartMsRef.current = Date.now();
       setRecordingSeconds(0);
@@ -735,7 +976,18 @@ export function TeleprompterStage({
     } catch {
       setCameraError('録画の開始に失敗しました。ブラウザの対応状況を確認してください。');
     }
-  }, [cameraStatus, isPlaying, recordedClip, startCameraStream]);
+  }, [
+    audioDevices,
+    cameraStatus,
+    isPlaying,
+    recordedClip,
+    script.id,
+    script.title,
+    selectedAudioDeviceId,
+    selectedDeviceId,
+    startCameraStream,
+    videoDevices,
+  ]);
 
   // Stop video recording
   const handleStopVideoRecording = useCallback(() => {
@@ -1048,7 +1300,16 @@ export function TeleprompterStage({
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={onExitStage}
+            onClick={() => {
+              if (cameraStatus === 'recording') {
+                const ok = window.confirm(
+                  '現在カメラ録画中です。録画を停止して編集画面へ戻りますか？'
+                );
+                if (!ok) return;
+                handleStopVideoRecording();
+              }
+              onExitStage();
+            }}
             className="flex min-h-[42px] items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/90 px-3.5 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800 hover:text-white"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -1094,13 +1355,47 @@ export function TeleprompterStage({
             )}
           </div>
 
-          {/* Camera REC Timer Badge */}
+          {/* Camera REC Timer Badge & Progressive Chunk Storage Status (Phase 6) */}
           {cameraStatus === 'recording' && (
             <div className="flex items-center gap-2 rounded-full border border-red-500/50 bg-red-500/20 px-3.5 py-1.5 text-xs font-bold text-red-200 shadow-lg">
               <span className="h-2.5 w-2.5 animate-ping rounded-full bg-red-500" />
               <span className="font-mono">
                 REC {formatDurationTimer(recordingSeconds)}
               </span>
+              {activeSessionMeta && (
+                <span
+                  className="hidden border-l border-red-400/30 pl-2 font-mono text-[10px] font-normal text-red-100/90 md:inline"
+                  title="5秒ごとにIndexedDBへ自動分割保存中"
+                >
+                  保存済 {activeSessionMeta.chunkCount}塊 ({formatBytesHuman(activeSessionMeta.totalBytes)})
+                  {pendingChunkWrites > 0 ? ` [書込待:${pendingChunkWrites}]` : ''}
+                </span>
+              )}
+              {!wakeLockSupported && (
+                <span
+                  className="hidden text-[10px] font-normal text-amber-300 lg:inline"
+                  title="お使いの環境ではスリープ防止APIが非対応のため、自動ロックをオフにしてください"
+                >
+                  ※スリープ注意
+                </span>
+              )}
+            </div>
+          )}
+
+          {isSavingRecording && (
+            <div className="flex items-center gap-1.5 rounded-full border border-sky-500/40 bg-sky-500/15 px-3 py-1 text-[11px] font-semibold text-sky-300">
+              <HardDrive className="h-3.5 w-3.5 animate-pulse" />
+              <span>録画データ保存処理中...</span>
+            </div>
+          )}
+
+          {storageInfo?.isLowStorageWarning && (
+            <div
+              className="flex items-center gap-1 rounded-full border border-amber-500/50 bg-amber-500/15 px-2.5 py-1 text-[10px] font-semibold text-amber-300"
+              title="設定画面から不要な録画セッションを削除できます"
+            >
+              <HardDrive className="h-3 w-3" />
+              <span>容量残少 ({formatBytesHuman(storageInfo.availableBytes)})</span>
             </div>
           )}
         </div>
@@ -1357,6 +1652,104 @@ export function TeleprompterStage({
           >
             <X className="h-4 w-4" />
           </button>
+        </div>
+      )}
+
+      {/* Phase 6 (8.5 & 8.6): Unfinished Recording Session Crash Recovery Prompt */}
+      {recoverableSessions.length > 0 && cameraStatus !== 'recording' && (
+        <div className="fixed top-20 right-4 left-4 z-40 mx-auto max-w-xl rounded-2xl border border-amber-500/50 bg-zinc-950/95 p-4 text-xs text-zinc-100 shadow-2xl backdrop-blur-xl">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <div className="rounded-xl bg-amber-500/20 p-2 text-amber-400">
+                <HardDrive className="h-4 w-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-amber-300">
+                  前回の録画データが残っています。復旧しますか？
+                </h3>
+                <p className="mt-0.5 text-[11px] text-zinc-300">
+                  異常終了または中断された録画セッション（{recoverableSessions.length}件）がIndexedDBに保存されています。
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRecoverableSessions([])}
+              className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+              title="後で確認する"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="mt-3 max-h-40 space-y-2 overflow-y-auto">
+            {recoverableSessions.map((sess) => (
+              <div
+                key={sess.sessionId}
+                className="flex flex-col justify-between gap-2 rounded-xl border border-zinc-800 bg-zinc-900/90 p-3 sm:flex-row sm:items-center"
+              >
+                <div>
+                  <p className="font-semibold text-zinc-100">
+                    {sess.scriptTitle || '無題の原稿'}
+                  </p>
+                  <p className="mt-0.5 text-[10px] text-zinc-400">
+                    {new Date(sess.startedAt).toLocaleString('ja-JP')} ・ 約
+                    {formatDurationTimer(sess.durationSec)} ・ {sess.chunkCount}
+                    チャンク ({formatBytesHuman(sess.totalBytes)})
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={isSavingRecording}
+                    onClick={() => handleRecoverSession(sess)}
+                    className="rounded-lg bg-amber-500 px-3 py-1.5 text-[11px] font-bold text-black transition hover:bg-amber-400 disabled:opacity-50"
+                  >
+                    復旧を試みる
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-[11px] font-medium text-zinc-200 transition hover:bg-zinc-700"
+                  >
+                    保存済みデータを確認する
+                  </button>
+                  {confirmDeleteRecoveryId === sess.sessionId ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleDeleteRecoverableSession(sess.sessionId)
+                      }
+                      className="rounded-lg bg-rose-600 px-2.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-rose-500"
+                    >
+                      本当に削除する
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfirmDeleteRecoveryId(sess.sessionId)
+                      }
+                      className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1.5 text-[11px] font-medium text-rose-300 transition hover:bg-rose-500/20"
+                    >
+                      <Trash2 className="inline h-3 w-3" /> 削除する
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-2.5 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setRecoverableSessions([])}
+              className="text-[11px] text-zinc-400 underline hover:text-zinc-200"
+            >
+              後で確認する（データを残して閉じる）
+            </button>
+          </div>
         </div>
       )}
 
