@@ -66,13 +66,16 @@ export function evaluateSpokenAgainstSegment(
 ): number {
   if (!spokenNorm || !segmentNorm) return 0;
 
-  // 発話が長すぎる場合（複数の文が連結された認識結果など）は末尾の直近発話も評価する
-  const candidatesToTest = [spokenNorm];
-  if (spokenNorm.length > 18) {
-    candidatesToTest.push(spokenNorm.slice(-16));
+  // 発話が長すぎる場合（複数の文が連結された認識結果など）は末尾の直近発話（最大14文字）を優先評価する
+  const candidatesToTest: string[] = [];
+  if (spokenNorm.length <= 22) {
+    candidatesToTest.push(spokenNorm);
   }
-  if (spokenNorm.length > 10) {
-    candidatesToTest.push(spokenNorm.slice(-10));
+  if (spokenNorm.length > 14) {
+    candidatesToTest.push(spokenNorm.slice(-14));
+  }
+  if (spokenNorm.length > 9) {
+    candidatesToTest.push(spokenNorm.slice(-9));
   }
 
   let bestScore = 0;
@@ -82,26 +85,45 @@ export function evaluateSpokenAgainstSegment(
 
     // 1. 完全部分文字列一致チェック
     if (segmentNorm.includes(query)) {
-      const coverage = Math.min(1, query.length / Math.min(12, segmentNorm.length));
+      const coverage = Math.min(
+        1,
+        query.length / Math.min(12, segmentNorm.length)
+      );
       const score = 0.78 + coverage * 0.22;
       if (score > bestScore) bestScore = score;
       continue;
     }
 
     // 2. セグメント内のスライディングウィンドウで最大類似度を探索
-    const winLen = Math.min(segmentNorm.length, Math.max(query.length, 4));
+    // 重要：query が segmentNorm より長い場合に winLen を segmentNorm.length に丸めてしまうと、
+    // 長い累積発話の中に偶然含まれるビッググラムだけで短い別段落が 0.65 以上の高スコアになる誤爆が起きる。
+    // そのため window サイズは query.length（上限20文字）を基準にして比較する。
+    const effectiveQuery = query.length > 20 ? query.slice(-20) : query;
+    if (effectiveQuery.length >= segmentNorm.length) {
+      const fullDice = computeBigramDiceSimilarity(effectiveQuery, segmentNorm);
+      if (fullDice > bestScore) {
+        bestScore = fullDice;
+      }
+      continue;
+    }
+
+    const winLen = Math.max(effectiveQuery.length, 4);
     const step = Math.max(1, Math.floor(winLen / 4));
 
-    for (let pos = 0; pos <= segmentNorm.length - Math.min(3, winLen); pos += step) {
-      const slice = segmentNorm.slice(pos, pos + winLen + 3);
-      const dice = computeBigramDiceSimilarity(query, slice);
+    for (
+      let pos = 0;
+      pos <= Math.max(0, segmentNorm.length - winLen);
+      pos += step
+    ) {
+      const slice = segmentNorm.slice(pos, pos + winLen + 2);
+      const dice = computeBigramDiceSimilarity(effectiveQuery, slice);
       if (dice > bestScore) {
         bestScore = dice;
       }
     }
 
     // 3. セグメント全体とのBigram類似度
-    const fullDice = computeBigramDiceSimilarity(query, segmentNorm);
+    const fullDice = computeBigramDiceSimilarity(effectiveQuery, segmentNorm);
     if (fullDice > bestScore) {
       bestScore = fullDice;
     }
@@ -477,15 +499,29 @@ export function findBestMatchingSegment(
 
   // 3. 大きな前方移動（飛ばし読み・次の段落へのジャンプ: delta >= 3）
   // 4.3.6 大きな位置移動には、より高い一致度を要求する（途中認識での複数行暴走ジャンプを防止）
+  // ただし「現在セグメントとよく一致しているのに共通単語で先の段落にも一致した」ケースを弾くため、
+  // bestRawScore > currentScore + 0.25 かつ、飛び先セグメントの広範囲（または冒頭）と75%以上一致していることを要求する。
   if (delta >= 3) {
-    const jumpThreshold = Math.min(0.88, baseThreshold + 0.26);
-    const canJumpOnInterim = spokenNorm.length >= 15 && bestRawScore >= 0.86;
-    // 十分な文字数（10文字以上）かつ高類似度のときのみジャンプを許可
+    const jumpThreshold = Math.min(0.86, baseThreshold + 0.25);
+    const candidateNorm = segments[bestIdx].normalizedText;
+    const headLen = Math.min(16, candidateNorm.length);
+    const headMatchScore = Math.max(
+      computeBigramDiceSimilarity(
+        spokenNorm.slice(0, headLen),
+        candidateNorm.slice(0, headLen)
+      ),
+      computeBigramDiceSimilarity(
+        spokenNorm.slice(-headLen),
+        candidateNorm.slice(0, headLen)
+      )
+    );
+
     if (
-      (isFinal || canJumpOnInterim) &&
+      isFinal &&
       spokenNorm.length >= 10 &&
       bestRawScore >= jumpThreshold &&
-      bestRawScore > currentScore + 0.22
+      headMatchScore >= 0.65 &&
+      bestRawScore > currentScore + 0.24
     ) {
       return {
         matchedSegmentIndex: bestIdx,

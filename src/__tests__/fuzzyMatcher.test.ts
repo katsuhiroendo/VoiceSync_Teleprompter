@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseScriptToSegments } from '@/lib/scriptParser';
 import { findBestMatchingSegment } from '@/lib/fuzzyMatcher';
 import { buildErrorInfo } from '@/lib/speechEngine';
+import { DEFAULT_SAMPLE_SCRIPTS } from '@/lib/db';
 
 const TEST_SCRIPT_JA = `皆さんこんにちは！今日も動画をご覧いただき、ありがとうございます。
 今回の動画では、カメラ目線を自然に維持しながら撮影できるテレプロンプターの活用方法についてご紹介します。
@@ -263,5 +264,54 @@ describe('VoiceSync Fuzzy Matcher & 10 Required Test Cases (Section 14)', () => 
 
     expect(cascadeRes.shouldAdvance).toBe(false);
     expect(cascadeRes.matchedSegmentIndex).toBe(nextIdx);
+  });
+
+  it('Screenshot Reproduction Guard: reading Segment 2 ("今回の動画では...VoiceSync Teleprompterの活用方法について詳しくご紹介します") advances strictly to Segment 3 ("YouTubeの撮影をしていると...") and NEVER skips to Segment 5 ("このテレプロンプターを使えば...")', () => {
+    const sampleJa = parseScriptToSegments(DEFAULT_SAMPLE_SCRIPTS[0].content);
+    const seg2Idx = sampleJa.findIndex((s) =>
+      s.text.includes('今回の動画では、カメラ目線を自然に維持しながら')
+    );
+    const seg3Idx = sampleJa.findIndex((s) =>
+      s.text.includes('YouTubeの撮影をしていると')
+    );
+    const seg5Idx = sampleJa.findIndex((s) =>
+      s.text.includes('このテレプロンプターを使えば')
+    );
+
+    expect(seg2Idx).toBe(2);
+    expect(seg3Idx).toBe(3);
+    expect(seg5Idx).toBe(5);
+
+    // 1. Speaker finishes reading Segment 2 (even with cumulative recognition text or katakana "テレプロンプター")
+    const stepFrom2 = findBestMatchingSegment(
+      '今回の動画ではカメラ目線を自然に維持しながら撮影できるテレプロンプターの活用方法について詳しくご紹介します',
+      sampleJa,
+      {
+        currentIndex: seg2Idx,
+        sensitivity: defaultSensitivity,
+        advanceTriggerRatio: 0.70,
+        isFinal: true,
+      }
+    );
+    expect(stepFrom2.shouldAdvance).toBe(true);
+    expect(stepFrom2.matchedSegmentIndex).toBe(seg3Idx);
+
+    // 2. Immediately after advancing to Segment 3, even if residual/cumulative transcript from Segment 0-2 arrives,
+    // it must stay on Segment 3 and NEVER jump to Segment 5 ("このテレプロンプターを使えば...")
+    const cumulativeResidual =
+      '皆さんこんにちは今日も動画をご覧いただきありがとうございます今回の動画ではカメラ目線を自然に維持しながら撮影できるテレプロンプターの活用方法について詳しくご紹介します';
+    const afterStep = findBestMatchingSegment(
+      cumulativeResidual.slice(-26),
+      sampleJa,
+      {
+        currentIndex: seg3Idx,
+        sensitivity: defaultSensitivity,
+        advanceTriggerRatio: 0.70,
+        isFinal: true,
+        preventBacktrackToIndex: seg2Idx,
+      }
+    );
+    expect(afterStep.matchedSegmentIndex).toBe(seg3Idx);
+    expect(afterStep.matchedSegmentIndex).not.toBe(seg5Idx);
   });
 });

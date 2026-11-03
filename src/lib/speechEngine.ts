@@ -321,8 +321,17 @@ export class SpeechRecognitionController {
 
     rec.onresult = (event: WebSpeechRecognitionEvent) => {
       this.lastSpeechTimestamp = Date.now();
+      const totalResults = event.results.length;
+      if (totalResults === 0) return;
 
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      // Chrome's continuous WebSpeechRecognition in Japanese frequently emits event.resultIndex = 0
+      // and accumulates all previous sentences into event.results[0..N-1], or updates old indices while
+      // the user is speaking at the latest index (totalResults - 1).
+      // To prevent already-spoken sentences from re-triggering or causing multi-paragraph jumps,
+      // ONLY process the newest active result slot (or any newly finalized slot from resultIndex).
+      const startIdx = Math.max(event.resultIndex, totalResults - 1);
+
+      for (let i = startIdx; i < totalResults; i++) {
         const res = event.results[i];
         const alt = res[0];
         if (!alt) continue;

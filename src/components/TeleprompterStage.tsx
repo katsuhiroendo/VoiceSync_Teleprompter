@@ -285,9 +285,14 @@ export function TeleprompterStage({
       // Normalize first so kanji conversion changes on the prefix do not break length-based slicing
       const fullSpokenNorm = normalizeTextForMatching(event.transcript);
 
-      // If we already advanced during this same recognition utterance (resultIndex),
-      // slice only the newly spoken normalized tail so the earlier sentence's words never pull us backward or double-advance.
-      let effectiveTranscript = event.transcript;
+      // Chrome's continuous SpeechRecognition in Japanese often keeps appending to a single buffer
+      // ("皆さんこんにちは 今日も動画をご覧いただき... 今回の動画では...").
+      // If we pass the entire 60+ char cumulative history into findBestMatchingSegment, words from 10 seconds ago
+      // or shared vocabulary ("テレプロンプター", "撮影") will falsely match a paragraph 3-4 segments ahead!
+      // Therefore:
+      // 1) If we already advanced within this resultIndex, slice strictly after the advance point.
+      // 2) Even if we haven't advanced in this resultIndex, cap the evaluated window to the most recent 24 normalized chars.
+      let effectiveTranscript = fullSpokenNorm;
       if (
         lastAdvanceSpokenLengthRef.current > 0 &&
         event.resultIndex === lastAdvanceResultIndexRef.current
@@ -296,8 +301,8 @@ export function TeleprompterStage({
           fullSpokenNorm.length - lastAdvanceSpokenLengthRef.current;
 
         // Require at least 4 newly spoken normalized characters after an advance before evaluating again,
-        // and enforce a 450ms minimum cooldown between consecutive advances within the same utterance.
-        if (newlyAddedNormLen < 4 || timeSinceLastAdvance < 450) {
+        // and enforce a 550ms minimum cooldown between consecutive advances.
+        if (newlyAddedNormLen < 4 || timeSinceLastAdvance < 550) {
           setTimeout(() => {
             setSpeechStatus((prev) =>
               prev === 'matching' ? 'listening' : prev
@@ -309,6 +314,10 @@ export function TeleprompterStage({
         effectiveTranscript = fullSpokenNorm.slice(
           lastAdvanceSpokenLengthRef.current
         );
+      }
+
+      if (effectiveTranscript.length > 26) {
+        effectiveTranscript = effectiveTranscript.slice(-26);
       }
 
       // Protect against ping-pong backtracking or residual double-advancing from the segment we just left
