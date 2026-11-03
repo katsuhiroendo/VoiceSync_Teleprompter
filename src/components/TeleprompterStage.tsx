@@ -215,6 +215,7 @@ export function TeleprompterStage({
   const [lastMarkerToast, setLastMarkerToast] = useState<NGMarkerItem | null>(
     null
   );
+  const [retakeJumpToast, setRetakeJumpToast] = useState<string | null>(null);
   const [customMarkerNote, setCustomMarkerNote] = useState<string>('');
   // Phase 2: Audio Quality Check Modal state
   const [isAudioTestOpen, setIsAudioTestOpen] = useState<boolean>(false);
@@ -228,6 +229,9 @@ export function TeleprompterStage({
     new CountdownController()
   );
   const postRecordSilenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const retakeJumpToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
   const wakeLockSentinelRef = useRef<{ release: () => Promise<void> } | null>(
@@ -1447,6 +1451,22 @@ export function TeleprompterStage({
         action
       );
       syncActiveSegmentPosition(targetIdx);
+
+      const actionLabels: Record<RetakeTargetAction, string> = {
+        'current-phrase': '現在フレーズの先頭から再開',
+        'prev-phrase': '1フレーズ前へ戻る',
+        'current-paragraph-start': '現在段落の先頭へ戻る',
+        'prev-heading-or-section': '前の見出し・章へ戻る',
+      };
+      setRetakeJumpToast(
+        `↩ ${actionLabels[action]}（フレーズ #${targetIdx + 1}）`
+      );
+      if (retakeJumpToastTimerRef.current) {
+        clearTimeout(retakeJumpToastTimerRef.current);
+      }
+      retakeJumpToastTimerRef.current = setTimeout(() => {
+        setRetakeJumpToast(null);
+      }, 2200);
     },
     [syncActiveSegmentPosition]
   );
@@ -1497,9 +1517,13 @@ export function TeleprompterStage({
   // Keyboard shortcuts during Teleprompter Stage
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const activeTag = document.activeElement?.tagName;
       if (
         document.querySelector('dialog[open]') ||
-        document.activeElement?.tagName === 'INPUT'
+        isAudioTestOpen ||
+        activeTag === 'INPUT' ||
+        activeTag === 'TEXTAREA' ||
+        activeTag === 'SELECT'
       ) {
         return;
       }
@@ -1510,20 +1534,63 @@ export function TeleprompterStage({
         return;
       }
 
+      if (e.metaKey || e.ctrlKey || e.altKey) {
+        return;
+      }
+
       if (e.code === 'Space') {
         e.preventDefault();
         setIsPlaying((prev) => !prev);
-      } else if (e.code === 'KeyM' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      } else if (e.code === 'KeyM' || e.code === 'KeyN') {
+        // NG Marker shortcut (M or N)
         e.preventDefault();
         handleRecordNGMarker('ng');
+      } else if (
+        e.code === 'Digit1' ||
+        e.code === 'Numpad1' ||
+        e.code === 'KeyR'
+      ) {
+        // 1 / R: Restart from beginning of current phrase
+        e.preventDefault();
+        handleRetakeJump('current-phrase');
+      } else if (
+        e.code === 'Digit2' ||
+        e.code === 'Numpad2' ||
+        ((e.code === 'ArrowUp' || e.code === 'ArrowLeft') && !e.shiftKey)
+      ) {
+        // 2 / Up / Left: Go back 1 phrase
+        e.preventDefault();
+        handleRetakeJump('prev-phrase');
+      } else if (
+        e.code === 'Digit3' ||
+        e.code === 'Numpad3' ||
+        e.code === 'KeyP' ||
+        (e.code === 'ArrowUp' && e.shiftKey)
+      ) {
+        // 3 / P / Shift+Up: Go back to start of current paragraph
+        e.preventDefault();
+        handleRetakeJump('current-paragraph-start');
+      } else if (
+        e.code === 'Digit4' ||
+        e.code === 'Numpad4' ||
+        e.code === 'KeyH' ||
+        (e.code === 'ArrowLeft' && e.shiftKey)
+      ) {
+        // 4 / H / Shift+Left: Go back to previous heading or section
+        e.preventDefault();
+        handleRetakeJump('prev-heading-or-section');
+      } else if (
+        (e.code === 'ArrowDown' || e.code === 'ArrowRight') &&
+        e.shiftKey
+      ) {
+        // Shift+Down / Shift+Right: Jump to next paragraph
+        e.preventDefault();
+        handleJumpParagraph('next');
       } else if (e.code === 'ArrowDown' || e.code === 'ArrowRight') {
+        // Down / Right: Advance 1 phrase
         e.preventDefault();
         const nextIdx = Math.min(segments.length - 1, activeSegmentIndex + 1);
         syncActiveSegmentPosition(nextIdx);
-      } else if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') {
-        e.preventDefault();
-        const prevIdx = Math.max(0, activeSegmentIndex - 1);
-        syncActiveSegmentPosition(prevIdx);
       } else if (e.code === 'Home') {
         e.preventDefault();
         handleResetToTop();
@@ -1536,8 +1603,11 @@ export function TeleprompterStage({
     activeSegmentIndex,
     countdownStep,
     handleCancelCountdown,
+    handleJumpParagraph,
     handleRecordNGMarker,
     handleResetToTop,
+    handleRetakeJump,
+    isAudioTestOpen,
     segments.length,
     syncActiveSegmentPosition,
   ]);
@@ -2327,6 +2397,13 @@ export function TeleprompterStage({
           </div>
         )}
 
+        {/* Retake position jump feedback toast */}
+        {retakeJumpToast && (
+          <div className="pointer-events-none absolute top-14 left-1/2 z-30 -translate-x-1/2 rounded-full border border-sky-400/50 bg-zinc-950/90 px-4 py-1.5 text-xs font-semibold text-sky-300 shadow-lg">
+            {retakeJumpToast}
+          </div>
+        )}
+
         {/* Scrollable Script Viewport */}
         <div
           ref={scrollContainerRef}
@@ -2686,40 +2763,52 @@ export function TeleprompterStage({
 
                 <div className="mt-2.5">
                   <span className="block text-[10px] font-semibold text-zinc-400">
-                    1. 撮り直し開始位置へジャンプ（音声追従位置も自動同期）：
+                    1. 撮り直し開始位置へジャンプ（パネルを閉じていてもキー操作可）：
                   </span>
                   <div className="mt-1.5 grid grid-cols-2 gap-1.5">
                     <button
                       type="button"
                       onClick={() => handleRetakeJump('current-phrase')}
-                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
+                      className="flex flex-col justify-between gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
                     >
-                      現在フレーズから再開
+                      <span>現在フレーズから再開</span>
+                      <span className="font-mono text-[9px] text-sky-400">
+                        キー: [1] / [R]
+                      </span>
                     </button>
                     <button
                       type="button"
                       onClick={() => handleRetakeJump('prev-phrase')}
-                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
+                      className="flex flex-col justify-between gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
                     >
-                      1フレーズ戻る
+                      <span>1フレーズ戻る</span>
+                      <span className="font-mono text-[9px] text-sky-400">
+                        キー: [2] / [↑] / [←]
+                      </span>
                     </button>
                     <button
                       type="button"
                       onClick={() =>
                         handleRetakeJump('current-paragraph-start')
                       }
-                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
+                      className="flex flex-col justify-between gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
                     >
-                      現在段落の先頭へ戻る
+                      <span>現在段落の先頭へ戻る</span>
+                      <span className="font-mono text-[9px] text-sky-400">
+                        キー: [3] / [P] / [Shift+↑]
+                      </span>
                     </button>
                     <button
                       type="button"
                       onClick={() =>
                         handleRetakeJump('prev-heading-or-section')
                       }
-                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
+                      className="flex flex-col justify-between gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-medium text-zinc-200 transition hover:border-sky-500/50 hover:bg-zinc-800"
                     >
-                      前の見出し・章へ戻る
+                      <span>前の見出し・章へ戻る</span>
+                      <span className="font-mono text-[9px] text-sky-400">
+                        キー: [4] / [H] / [Shift+←]
+                      </span>
                     </button>
                   </div>
                 </div>

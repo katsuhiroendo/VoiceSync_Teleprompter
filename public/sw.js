@@ -1,4 +1,4 @@
-const CACHE_NAME = 'voicesync-teleprompter-v3';
+const CACHE_NAME = 'voicesync-teleprompter-v4';
 const ASSETS_TO_CACHE = ['./', './manifest.json'];
 
 self.addEventListener('install', (event) => {
