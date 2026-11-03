@@ -18,6 +18,14 @@ import {
   MatchEvaluationResult,
 } from '@/lib/fuzzyMatcher';
 import {
+  CameraDeviceOption,
+  CameraStatus,
+  RecordedVideoClip,
+  selectSupportedVideoMimeType,
+  listVideoInputDevices,
+  formatDurationTimer,
+} from '@/lib/cameraRecorder';
+import {
   Play,
   Pause,
   RotateCcw,
@@ -39,6 +47,12 @@ import {
   WifiOff,
   CheckCircle2,
   X,
+  Video,
+  VideoOff,
+  Circle,
+  Square,
+  Download,
+  Layers,
 } from 'lucide-react';
 
 interface TeleprompterStageProps {
@@ -120,6 +134,24 @@ export function TeleprompterStage({
   const [speechError, setSpeechError] = useState<SpeechErrorInfo | null>(null);
   const [isOffline, setIsOffline] = useState<boolean>(false);
   const [simulationInput, setSimulationInput] = useState<string>('');
+
+  // Camera Preview & Video Recording State (MacBook built-in / external camera)
+  const [cameraStatus, setCameraStatus] = useState<CameraStatus>('off');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [videoDevices, setVideoDevices] = useState<CameraDeviceOption[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [recordingSeconds, setRecordingSeconds] = useState<number>(0);
+  const [recordedClip, setRecordedClip] = useState<RecordedVideoClip | null>(
+    null
+  );
+
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingStartMsRef = useRef<number>(0);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
+  const backdropVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const segmentRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -303,6 +335,245 @@ export function TeleprompterStage({
       }
     };
   }, [processRecognizedSpeech]);
+
+  // Attach active camera stream to video preview elements whenever stream or preview mode changes
+  const attachStreamToVideoElements = useCallback(
+    (stream: MediaStream | null) => {
+      if (pipVideoRef.current && pipVideoRef.current.srcObject !== stream) {
+        pipVideoRef.current.srcObject = stream;
+      }
+      if (
+        backdropVideoRef.current &&
+        backdropVideoRef.current.srcObject !== stream
+      ) {
+        backdropVideoRef.current.srcObject = stream;
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    attachStreamToVideoElements(cameraStreamRef.current);
+  }, [settings.cameraPreviewMode, cameraStatus, attachStreamToVideoElements]);
+
+  // Stop camera stream & release tracks cleanly
+  const stopCameraStream = useCallback(() => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== 'inactive'
+    ) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
+    mediaRecorderRef.current = null;
+
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+      cameraStreamRef.current = null;
+    }
+    attachStreamToVideoElements(null);
+    setCameraStatus('off');
+    setRecordingSeconds(0);
+  }, [attachStreamToVideoElements]);
+
+  // Start MacBook built-in / external camera stream
+  const startCameraStream = useCallback(
+    async (overrideDeviceId?: string): Promise<MediaStream | null> => {
+      if (
+        typeof navigator === 'undefined' ||
+        !navigator.mediaDevices ||
+        !navigator.mediaDevices.getUserMedia
+      ) {
+        setCameraError(
+          'お使いのブラウザではカメラ機能 (getUserMedia) が利用できません。'
+        );
+        setCameraStatus('error');
+        return null;
+      }
+
+      setCameraError(null);
+      setCameraStatus('initializing');
+
+      try {
+        if (cameraStreamRef.current) {
+          cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+        }
+
+        const targetDeviceId = overrideDeviceId ?? selectedDeviceId;
+        const videoConstraints: MediaTrackConstraints = {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30 },
+          ...(targetDeviceId
+            ? { deviceId: { exact: targetDeviceId } }
+            : { facingMode: 'user' }),
+        };
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+
+        cameraStreamRef.current = stream;
+        setCameraStatus('ready');
+        attachStreamToVideoElements(stream);
+
+        const devices = await listVideoInputDevices();
+        setVideoDevices(devices);
+        if (!targetDeviceId && devices.length > 0) {
+          const activeTrack = stream.getVideoTracks()[0];
+          const activeId = activeTrack?.getSettings()?.deviceId;
+          setSelectedDeviceId(activeId || devices[0].deviceId);
+        }
+
+        return stream;
+      } catch (err) {
+        const domErr = err as DOMException;
+        setCameraStatus('error');
+        if (
+          domErr?.name === 'NotAllowedError' ||
+          domErr?.name === 'PermissionDeniedError'
+        ) {
+          setCameraError(
+            'カメラまたはマイクの権限が拒否されました。ブラウザのアドレスバー左側の設定、またはmacOSの「システム設定 ＞ プライバシーとセキュリティ ＞ カメラ」から許可してください。'
+          );
+        } else {
+          setCameraError(
+            'カメラを起動できませんでした。他のアプリがカメラを使用していないか確認してください。'
+          );
+        }
+        return null;
+      }
+    },
+    [attachStreamToVideoElements, selectedDeviceId]
+  );
+
+  // Start video recording on the MacBook camera
+  const handleStartVideoRecording = useCallback(async () => {
+    let stream = cameraStreamRef.current;
+    if (!stream || cameraStatus === 'off' || cameraStatus === 'error') {
+      stream = await startCameraStream();
+    }
+    if (!stream) return;
+
+    // Clean up previous recorded blob URL if present
+    if (recordedClip?.url) {
+      URL.revokeObjectURL(recordedClip.url);
+      setRecordedClip(null);
+    }
+
+    const { mimeType, extension } = selectSupportedVideoMimeType();
+    recordedChunksRef.current = [];
+
+    try {
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
+      recorder.ondataavailable = (ev: BlobEvent) => {
+        if (ev.data && ev.data.size > 0) {
+          recordedChunksRef.current.push(ev.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const finalMime =
+          recorder.mimeType || mimeType || 'video/webm';
+        const blob = new Blob(recordedChunksRef.current, {
+          type: finalMime,
+        });
+        const url = URL.createObjectURL(blob);
+        const durationSec = Math.max(
+          1,
+          Math.round((Date.now() - recordingStartMsRef.current) / 1000)
+        );
+        setRecordedClip({
+          url,
+          blob,
+          mimeType: finalMime,
+          extension: finalMime.includes('mp4') ? 'mp4' : extension,
+          durationSec,
+          createdAt: Date.now(),
+        });
+        setCameraStatus(cameraStreamRef.current ? 'ready' : 'off');
+      };
+
+      recorder.start(1000);
+      mediaRecorderRef.current = recorder;
+      recordingStartMsRef.current = Date.now();
+      setRecordingSeconds(0);
+      setCameraStatus('recording');
+
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds(
+          Math.floor((Date.now() - recordingStartMsRef.current) / 1000)
+        );
+      }, 500);
+
+      // Automatically start teleprompter voice/constant scrolling if enabled in settings
+      if (settingsRef.current.autoStartPrompterOnRecord && !isPlaying) {
+        setIsPlaying(true);
+      }
+    } catch {
+      setCameraError('録画の開始に失敗しました。ブラウザの対応状況を確認してください。');
+    }
+  }, [cameraStatus, isPlaying, recordedClip, startCameraStream]);
+
+  // Stop video recording
+  const handleStopVideoRecording = useCallback(() => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== 'inactive'
+    ) {
+      mediaRecorderRef.current.stop();
+    }
+    setIsPlaying(false);
+  }, []);
+
+  // Download recorded video clip to MacBook
+  const handleDownloadRecordedVideo = useCallback(() => {
+    if (!recordedClip) return;
+    const safeTitle =
+      script.title.trim().replace(/[\\/:*?"<>|]/g, '_') || 'voicesync_recording';
+    const timestamp = new Date(recordedClip.createdAt)
+      .toISOString()
+      .slice(0, 19)
+      .replace(/[:T]/g, '-');
+    const a = document.createElement('a');
+    a.href = recordedClip.url;
+    a.download = `${safeTitle}_${timestamp}.${recordedClip.extension}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, [recordedClip, script.title]);
+
+  // Ensure camera & blob URLs are cleaned up on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
 
   // Keep language synchronized without recreating the controller
   useEffect(() => {
@@ -601,10 +872,76 @@ export function TeleprompterStage({
               </div>
             )}
           </div>
+
+          {/* Camera REC Timer Badge */}
+          {cameraStatus === 'recording' && (
+            <div className="flex items-center gap-2 rounded-full border border-red-500/50 bg-red-500/20 px-3.5 py-1.5 text-xs font-bold text-red-200 shadow-lg">
+              <span className="h-2.5 w-2.5 animate-ping rounded-full bg-red-500" />
+              <span className="font-mono">
+                REC {formatDurationTimer(recordingSeconds)}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Right Quick Toggles */}
         <div className="flex items-center gap-2">
+          {/* MacBook Camera Preview Toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              if (cameraStatus === 'off' || cameraStatus === 'error') {
+                startCameraStream();
+              } else {
+                stopCameraStream();
+              }
+            }}
+            className={`flex min-h-[42px] items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
+              cameraStatus === 'ready' || cameraStatus === 'recording'
+                ? 'border-rose-500/60 bg-rose-500/20 text-rose-300'
+                : 'border-zinc-800 bg-zinc-900/90 text-zinc-400 hover:text-zinc-200'
+            }`}
+            title="MacBookカメラの起動 / 停止"
+          >
+            {cameraStatus === 'ready' || cameraStatus === 'recording' ? (
+              <Video className="h-4 w-4" />
+            ) : (
+              <VideoOff className="h-4 w-4" />
+            )}
+            <span className="hidden xl:inline">
+              {cameraStatus === 'off' || cameraStatus === 'error'
+                ? 'カメラ起動'
+                : 'カメラON'}
+            </span>
+          </button>
+
+          {/* Switch Camera Preview Layout (PiP / Backdrop) when Camera is active */}
+          {(cameraStatus === 'ready' || cameraStatus === 'recording') && (
+            <button
+              type="button"
+              onClick={() =>
+                onUpdateSettings({
+                  cameraPreviewMode:
+                    settings.cameraPreviewMode === 'pip'
+                      ? 'backdrop'
+                      : settings.cameraPreviewMode === 'backdrop'
+                        ? 'hidden'
+                        : 'pip',
+                })
+              }
+              className="flex min-h-[42px] items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/90 px-3 py-2 text-xs font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+              title="カメラプレビュー表示切替 (小窓 PiP / 背景透過 / 非表示)"
+            >
+              <Layers className="h-4 w-4 text-sky-400" />
+              <span className="hidden lg:inline">
+                {settings.cameraPreviewMode === 'pip'
+                  ? '小窓表示'
+                  : settings.cameraPreviewMode === 'backdrop'
+                    ? '背景透過'
+                    : '映像非表示'}
+              </span>
+            </button>
+          )}
           {/* Font Size Quick Stepper */}
           <div className="hidden items-center rounded-xl border border-zinc-800 bg-zinc-900/90 p-1 lg:flex">
             <button
@@ -784,6 +1121,125 @@ export function TeleprompterStage({
           </div>
         </div>
       )}
+
+      {/* Camera Error Toast */}
+      {cameraError && (
+        <div className="fixed top-20 right-4 left-4 z-40 mx-auto flex max-w-xl items-center justify-between gap-3 rounded-2xl border border-rose-500/40 bg-zinc-950/95 px-4 py-3 text-xs text-rose-200 shadow-2xl backdrop-blur-xl">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
+            <span>{cameraError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCameraError(null)}
+            className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Recorded Video Instant Preview & Download Banner */}
+      {recordedClip && cameraStatus !== 'recording' && (
+        <div className="fixed top-16 left-4 z-40 w-80 rounded-2xl border border-white/15 bg-zinc-950/95 p-3.5 text-xs text-zinc-100 shadow-2xl backdrop-blur-xl">
+          <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+            <span className="font-semibold text-emerald-400">
+              カメラ録画が完了しました ({formatDurationTimer(recordedClip.durationSec)})
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                URL.revokeObjectURL(recordedClip.url);
+                setRecordedClip(null);
+              }}
+              className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+              title="閉じる"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <video
+            src={recordedClip.url}
+            controls
+            playsInline
+            className="mt-2.5 aspect-video w-full rounded-xl bg-black object-cover"
+          />
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleDownloadRecordedVideo}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-sky-500 py-2 text-xs font-bold text-white shadow transition hover:bg-sky-400"
+            >
+              <Download className="h-3.5 w-3.5" />
+              動画を保存 (.{recordedClip.extension})
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Backdrop Camera Preview Mode (Full Stage Background behind text) */}
+      {(cameraStatus === 'ready' || cameraStatus === 'recording') &&
+        settings.cameraPreviewMode === 'backdrop' && (
+          <video
+            ref={backdropVideoRef}
+            autoPlay
+            muted
+            playsInline
+            style={{
+              opacity: settings.cameraBackdropOpacity,
+              transform: settings.cameraMirrorPreview ? 'scaleX(-1)' : undefined,
+            }}
+            className="pointer-events-none fixed inset-0 z-0 h-full w-full object-cover transition-opacity duration-300"
+          />
+        )}
+
+      {/* Picture-in-Picture (PiP) Top-Center Camera Preview right below MacBook Webcam */}
+      {(cameraStatus === 'ready' || cameraStatus === 'recording') &&
+        settings.cameraPreviewMode === 'pip' && (
+          <div className="fixed top-14 left-1/2 z-30 -translate-x-1/2 overflow-hidden rounded-2xl border border-white/20 bg-black/90 shadow-2xl">
+            <video
+              ref={pipVideoRef}
+              autoPlay
+              muted
+              playsInline
+              style={{
+                transform: settings.cameraMirrorPreview
+                  ? 'scaleX(-1)'
+                  : undefined,
+              }}
+              className="h-28 w-48 object-cover sm:h-32 sm:w-56"
+            />
+            <div className="absolute right-1.5 bottom-1.5 left-1.5 flex items-center justify-between rounded-lg bg-black/65 px-2 py-0.5 text-[10px] text-zinc-200 backdrop-blur-sm">
+              <span className="truncate">
+                {cameraStatus === 'recording'
+                  ? `● REC ${formatDurationTimer(recordingSeconds)}`
+                  : 'カメラ目線プレビュー'}
+              </span>
+              {videoDevices.length > 1 && (
+                <select
+                  value={selectedDeviceId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setSelectedDeviceId(nextId);
+                    startCameraStream(nextId);
+                  }}
+                  aria-label="カメラ切替"
+                  className="max-w-[90px] truncate bg-transparent text-[10px] text-sky-300 focus:outline-none"
+                >
+                  {videoDevices.map((d) => (
+                    <option
+                      key={d.deviceId}
+                      value={d.deviceId}
+                      className="bg-zinc-900 text-white"
+                    >
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+        )}
 
       {/* Main Prompter Stage Container (supports Camera Eyeline Mode) */}
       <div
@@ -1053,6 +1509,31 @@ export function TeleprompterStage({
             <span className="hidden sm:inline">次段落</span>
             <SkipForward className="h-4 w-4" />
           </button>
+
+          <div className="h-6 w-[1px] bg-zinc-800" />
+
+          {/* MacBook Camera Video Record / Stop Button */}
+          {cameraStatus === 'recording' ? (
+            <button
+              type="button"
+              onClick={handleStopVideoRecording}
+              className="flex min-h-[44px] items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-xs font-bold text-white shadow-lg shadow-rose-600/30 transition hover:bg-rose-500 active:scale-95"
+              title="カメラ録画を停止して動画ファイルを生成"
+            >
+              <Square className="h-3.5 w-3.5 fill-current" />
+              <span>録画停止 ({formatDurationTimer(recordingSeconds)})</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleStartVideoRecording}
+              className="flex min-h-[44px] items-center gap-2 rounded-xl border border-rose-500/40 bg-rose-500/15 px-4 py-2.5 text-xs font-bold text-rose-200 transition hover:bg-rose-500/25 active:scale-95"
+              title="MacBookカメラで動画撮影を開始（プロンプター連動）"
+            >
+              <Circle className="h-3.5 w-3.5 fill-rose-500 text-rose-500" />
+              <span>カメラ録画開始</span>
+            </button>
+          )}
 
           {/* Speed Slider when in Constant Speed Mode */}
           {scrollMode === 'constant' && (

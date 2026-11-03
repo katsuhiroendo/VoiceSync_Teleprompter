@@ -31,6 +31,8 @@ export type SpeechStatus =
   | 'paused'        // 一時停止中
   | 'error';        // エラー
 
+export type CameraPreviewMode = 'pip' | 'backdrop' | 'hidden';
+
 export interface PrompterSettings {
   // 5. 表示設定 (Display settings)
   fontSize: number;             // 16〜100px
@@ -63,6 +65,12 @@ export interface PrompterSettings {
   trackingSpeed: number;         // 追従速度倍率 (0.5〜2.0)
   scrollAnimationMs: number;     // スクロールアニメーション時間 (150〜800ms)
   showDebugOverlay: boolean;     // 音声認識デバッグ表示
+
+  // カメラ撮影・プレビュー設定 (Camera recording settings)
+  cameraPreviewMode: CameraPreviewMode; // 'pip' (上部小窓) | 'backdrop' (背面全体) | 'hidden'
+  cameraBackdropOpacity: number;        // 背面表示時のカメラ不透明度 (0.15〜0.85)
+  cameraMirrorPreview: boolean;         // カメラプレビューを鏡像反転するか (default: true)
+  autoStartPrompterOnRecord: boolean;   // 録画開始時に自動でプロンプターも開始するか
 }
 
 export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
@@ -93,4 +101,9 @@ export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
   trackingSpeed: 1.0,
   scrollAnimationMs: 320,
   showDebugOverlay: true,
+
+  cameraPreviewMode: 'pip',
+  cameraBackdropOpacity: 0.35,
+  cameraMirrorPreview: true,
+  autoStartPrompterOnRecord: true,
 };

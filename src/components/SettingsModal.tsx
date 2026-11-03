@@ -14,6 +14,7 @@ import {
   AlignLeft,
   AlignCenter,
   AlignRight,
+  Video,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -720,6 +721,99 @@ export function SettingsModal({
                   }
                   className="w-full accent-sky-500"
                 />
+              </div>
+            </div>
+          </section>
+
+          {/* Section 4: MacBookカメラ撮影・プレビュー設定 */}
+          <section className="space-y-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-rose-400">
+              <Video className="h-4 w-4" />
+              <span>MacBookカメラ撮影・プレビュー設定</span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-2.5 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <span className="block text-xs font-medium text-zinc-300">
+                  カメラプレビューの表示スタイル
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { id: 'pip', label: '小窓表示 (カメラ直下)' },
+                    { id: 'backdrop', label: '背景透過 (文字の背面)' },
+                    { id: 'hidden', label: 'プレビュー非表示' },
+                  ].map((mode) => (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() =>
+                        onUpdateSettings({
+                          cameraPreviewMode:
+                            mode.id as PrompterSettings['cameraPreviewMode'],
+                        })
+                      }
+                      className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
+                        settings.cameraPreviewMode === mode.id
+                          ? 'bg-rose-500 text-white'
+                          : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2.5 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <div className="flex justify-between text-xs font-medium">
+                  <span className="text-zinc-300">
+                    背景透過時のカメラ映像の濃さ
+                  </span>
+                  <span className="font-mono text-rose-400">
+                    {Math.round(settings.cameraBackdropOpacity * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.15}
+                  max={0.85}
+                  step={0.05}
+                  value={settings.cameraBackdropOpacity}
+                  onChange={(e) =>
+                    onUpdateSettings({
+                      cameraBackdropOpacity: Number(e.target.value),
+                    })
+                  }
+                  className="w-full accent-rose-500"
+                />
+                <div className="flex flex-col gap-1.5 pt-1 text-xs text-zinc-300">
+                  <label className="flex items-center justify-between">
+                    <span>プレビュー映像を鏡像（左右反転）表示</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.cameraMirrorPreview}
+                      onChange={(e) =>
+                        onUpdateSettings({
+                          cameraMirrorPreview: e.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 accent-rose-500"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between">
+                    <span>録画開始と同時に音声追従も自動スタート</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.autoStartPrompterOnRecord}
+                      onChange={(e) =>
+                        onUpdateSettings({
+                          autoStartPrompterOnRecord: e.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 accent-rose-500"
+                    />
+                  </label>
+                </div>
               </div>
             </div>
           </section>
