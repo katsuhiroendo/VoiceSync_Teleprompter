@@ -48,19 +48,40 @@ export function SettingsModal({
   const handleScanDevices = async (requestPermission = false) => {
     setIsScanningDevices(true);
     try {
+      let { videoDevices: vList, audioDevices: aList } =
+        await listMediaInputDevices();
+
+      const needsPermissionForLabels =
+        vList.length === 0 ||
+        vList.some((d) => !d.deviceId || /^カメラ \d+$/.test(d.label));
+
       if (
-        requestPermission &&
+        (requestPermission || needsPermissionForLabels) &&
         typeof navigator !== 'undefined' &&
         navigator.mediaDevices?.getUserMedia
       ) {
-        const tempStream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
-        tempStream.getTracks().forEach((t) => t.stop());
+        try {
+          const tempStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+          tempStream.getTracks().forEach((t) => t.stop());
+        } catch {
+          // Try video-only if audio permission fails or has no mic
+          try {
+            const videoOnlyStream = await navigator.mediaDevices.getUserMedia({
+              video: true,
+            });
+            videoOnlyStream.getTracks().forEach((t) => t.stop());
+          } catch {
+            // Ignore if user declined permission
+          }
+        }
+        const refreshed = await listMediaInputDevices();
+        vList = refreshed.videoDevices;
+        aList = refreshed.audioDevices;
       }
-      const { videoDevices: vList, audioDevices: aList } =
-        await listMediaInputDevices();
+
       setVideoDevices(vList);
       setAudioDevices(aList);
     } catch {
@@ -773,17 +794,20 @@ export function SettingsModal({
               <div className="flex items-center gap-2 text-sm font-semibold text-rose-400">
                 <Video className="h-4 w-4" />
                 <span>カメラ（MacBook内蔵 / USB接続スマホ）＆マイク設定</span>
+                <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] font-normal text-zinc-300">
+                  検出カメラ: {videoDevices.length}台 / マイク: {audioDevices.length}台
+                </span>
               </div>
               <button
                 type="button"
                 onClick={() => handleScanDevices(true)}
                 disabled={isScanningDevices}
-                className="flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/25 disabled:opacity-50"
               >
                 <RefreshCw
                   className={`h-3.5 w-3.5 ${isScanningDevices ? 'animate-spin' : ''}`}
                 />
-                <span>USBスマホ・マイクを再スキャン</span>
+                <span>カメラ権限を許可してUSBスマホを再スキャン</span>
               </button>
             </div>
 

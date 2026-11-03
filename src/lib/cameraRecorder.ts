@@ -135,9 +135,7 @@ export function buildVideoTrackConstraints(options: {
     width: { ideal: widthIdeal },
     height: { ideal: heightIdeal },
     frameRate: { ideal: 30 },
-    ...(options.deviceId
-      ? { deviceId: { exact: options.deviceId } }
-      : { facingMode: 'user' }),
+    ...(options.deviceId ? { deviceId: { exact: options.deviceId } } : {}),
   };
 }
 

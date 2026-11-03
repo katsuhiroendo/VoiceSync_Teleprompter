@@ -449,12 +449,14 @@ export function TeleprompterStage({
 
         // Determine target video device (prefer user selection, or auto-detect USB smartphone if none selected)
         let targetVideoId =
-          overrideVideoDeviceId ??
-          (selectedDeviceId || settingsRef.current.preferredVideoDeviceId);
+          overrideVideoDeviceId !== undefined
+            ? overrideVideoDeviceId
+            : selectedDeviceId || settingsRef.current.preferredVideoDeviceId;
 
         const targetAudioId =
-          overrideAudioDeviceId ??
-          (selectedAudioDeviceId || settingsRef.current.preferredAudioDeviceId);
+          overrideAudioDeviceId !== undefined
+            ? overrideAudioDeviceId
+            : selectedAudioDeviceId || settingsRef.current.preferredAudioDeviceId;
 
         const videoConstraints = buildVideoTrackConstraints({
           deviceId: targetVideoId || undefined,
@@ -469,10 +471,19 @@ export function TeleprompterStage({
           ...(targetAudioId ? { deviceId: { ideal: targetAudioId } } : {}),
         };
 
-        let stream = await navigator.mediaDevices.getUserMedia({
-          video: videoConstraints,
-          audio: audioConstraints,
-        });
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: videoConstraints,
+            audio: audioConstraints,
+          });
+        } catch {
+          // Fallback: if USB UVC webcam rejects ideal resolution/aspectRatio or audio track fails, retry with relaxed video constraints
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: targetVideoId ? { deviceId: { ideal: targetVideoId } } : true,
+            audio: true,
+          });
+        }
 
         // After permission is granted, enumerate device labels so we can detect USB Smartphone cameras (Pixel / iPhone)
         const { vList, aList } = await refreshMediaDevices();
@@ -491,14 +502,21 @@ export function TeleprompterStage({
           ) {
             targetVideoId = smartphoneCam.deviceId;
             stream.getTracks().forEach((t) => t.stop());
-            stream = await navigator.mediaDevices.getUserMedia({
-              video: buildVideoTrackConstraints({
-                deviceId: targetVideoId,
-                resolution: settingsRef.current.cameraResolution,
-                aspectRatio: settingsRef.current.cameraAspectRatio,
-              }),
-              audio: audioConstraints,
-            });
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: buildVideoTrackConstraints({
+                  deviceId: targetVideoId,
+                  resolution: settingsRef.current.cameraResolution,
+                  aspectRatio: settingsRef.current.cameraAspectRatio,
+                }),
+                audio: audioConstraints,
+              });
+            } catch {
+              stream = await navigator.mediaDevices.getUserMedia({
+                video: { deviceId: { exact: targetVideoId } },
+                audio: audioConstraints,
+              });
+            }
           }
         }
 
@@ -548,6 +566,37 @@ export function TeleprompterStage({
       selectedDeviceId,
     ]
   );
+
+  // Sync camera/audio selection and resolution changes made inside SettingsModal
+  useEffect(() => {
+    const nextVideoId = settings.preferredVideoDeviceId || '';
+    const nextAudioId = settings.preferredAudioDeviceId || '';
+    const videoChanged =
+      nextVideoId !== '' && nextVideoId !== selectedDeviceId;
+    const audioChanged =
+      nextAudioId !== '' && nextAudioId !== selectedAudioDeviceId;
+
+    if (videoChanged) {
+      setSelectedDeviceId(nextVideoId);
+    }
+    if (audioChanged) {
+      setSelectedAudioDeviceId(nextAudioId);
+    }
+
+    if (cameraStatus === 'ready' && (videoChanged || audioChanged)) {
+      startCameraStream(
+        nextVideoId || selectedDeviceId,
+        nextAudioId || selectedAudioDeviceId
+      );
+    }
+  }, [
+    cameraStatus,
+    selectedAudioDeviceId,
+    selectedDeviceId,
+    settings.preferredAudioDeviceId,
+    settings.preferredVideoDeviceId,
+    startCameraStream,
+  ]);
 
   // Start video recording on the MacBook camera
   const handleStartVideoRecording = useCallback(async () => {
