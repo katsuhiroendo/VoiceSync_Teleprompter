@@ -211,4 +211,34 @@ describe('VoiceSync Fuzzy Matcher & 10 Required Test Cases (Section 14)', () => 
     expect(earlyRes60.matchedSegmentIndex).toBe(seg2Idx + 1);
     expect(earlyRes60.reason).toBe('early-trigger-advance');
   });
+
+  it('Anti-Ping-Pong Guard: prevents jumping back to the previous paragraph when finishing the tail of the previous sentence after an early advance', () => {
+    const seg2Idx = segments.findIndex((s) =>
+      s.text.includes('今回の動画では')
+    );
+    const nextParagraphIdx = seg2Idx + 1;
+
+    // Suppose we just advanced early from seg2Idx to nextParagraphIdx at 60%,
+    // and now the speaker finishes reading the tail of seg2Idx ("テレプロンプターの活用方法についてご紹介します")
+    // or the final transcript of seg2Idx arrives.
+    const remainingTailOfPrevParagraph =
+      'テレプロンプターの活用方法についてご紹介します';
+
+    const afterAdvanceRes = findBestMatchingSegment(
+      remainingTailOfPrevParagraph,
+      segments,
+      {
+        currentIndex: nextParagraphIdx,
+        sensitivity: defaultSensitivity,
+        advanceTriggerRatio: 0.60,
+        isFinal: true,
+        preventBacktrackToIndex: seg2Idx,
+      }
+    );
+
+    // Must NOT backtrack to seg2Idx and must NOT double-advance to nextParagraphIdx + 1
+    expect(afterAdvanceRes.shouldAdvance).toBe(false);
+    expect(afterAdvanceRes.matchedSegmentIndex).toBe(nextParagraphIdx);
+    expect(afterAdvanceRes.reason).toBe('same-segment');
+  });
 });

@@ -115,6 +115,12 @@ export interface FindBestSegmentOptions {
   sensitivity: number;           // 0.35〜0.9 (高いほど敏感に追従、標準0.65)
   advanceTriggerRatio?: number;  // 0.40〜0.95 (現在の文・段落の何割まで読んだら次へ先行遷移するか、標準0.70)
   isFinal: boolean;
+  /**
+   * 前のセグメント（currentIndex - 1）から先行遷移してきた直後の場合、
+   * 話者がまだ前のセグメントの後半を読み終えている途中であるため、
+   * 前のセグメントへの逆戻り（ピンポン現象）や、前のセグメント残余音声による二重送りを防止する。
+   */
+  preventBacktrackToIndex?: number | null;
 }
 
 /**
@@ -223,6 +229,7 @@ export function findBestMatchingSegment(
     sensitivity,
     advanceTriggerRatio = 0.70,
     isFinal,
+    preventBacktrackToIndex = null,
   } = options;
 
   if (segments.length === 0) {
@@ -263,6 +270,32 @@ export function findBestMatchingSegment(
     spokenNorm,
     currentSeg.normalizedText
   );
+
+  // 直前に先行送り（early-trigger-advance等）されたばかりで、発話内容がまだ1つ前のセグメントと強く一致しており
+  // かつ現在（遷移後）のセグメントとはまだ一致していない場合（＝前の文の末尾を読み切っている最中）は、
+  // 元の段落への逆戻りも、さらなる二重送りもせず「現在の段落位置をピタッと維持」する（ピンポン現象の完全防止）
+  if (
+    preventBacktrackToIndex !== null &&
+    preventBacktrackToIndex >= 0 &&
+    preventBacktrackToIndex < segments.length &&
+    preventBacktrackToIndex !== safeCurrentIdx
+  ) {
+    const prevSeg = segments[preventBacktrackToIndex];
+    const prevScore = evaluateSpokenAgainstSegment(
+      spokenNorm,
+      prevSeg.normalizedText
+    );
+    if (prevScore > currentScore + 0.08 && currentScore < baseThreshold + 0.12) {
+      return {
+        matchedSegmentIndex: safeCurrentIdx,
+        similarityScore: currentScore,
+        progressRatio: 0,
+        distanceFromCurrent: 0,
+        shouldAdvance: false,
+        reason: 'same-segment',
+      };
+    }
+  }
 
   // 現在のセグメントが段落の最終フレーズ（次が別段落）かどうかを判定
   const isEndOfParagraph =
@@ -404,10 +437,37 @@ export function findBestMatchingSegment(
   }
 
   // 4. 前の文章の読み直し（delta < 0）
-  // 認識結果の揺らぎで頻繁に前後しないよう、6文字以上かつ高い一致度が必要
+  // 認識結果の揺らぎや、前の段落の末尾残余音声で元の段落に逆戻り（ピンポン現象）しないよう厳格にガードする：
+  // - 途中認識(interim)では逆戻りしない（isFinal確定時、または14文字以上の明確な再発話のみ許可）
+  // - 直前に遷移してきた元のセグメント(preventBacktrackToIndex)への逆戻りはブロック
+  // - 現在のセグメントでも一定の類似度がある場合は逆戻りしない
   if (delta < 0) {
-    const backtrackThreshold = Math.min(0.86, baseThreshold + 0.24);
-    if (spokenNorm.length >= 6 && bestRawScore >= backtrackThreshold) {
+    if (bestIdx === preventBacktrackToIndex) {
+      return {
+        matchedSegmentIndex: safeCurrentIdx,
+        similarityScore: currentScore,
+        progressRatio,
+        distanceFromCurrent: 0,
+        shouldAdvance: false,
+        reason: 'same-segment',
+      };
+    }
+
+    const isCrossParagraphBacktrack =
+      segments[bestIdx].paragraphIndex < currentSeg.paragraphIndex;
+    const backtrackThreshold = Math.min(
+      0.90,
+      baseThreshold + (isCrossParagraphBacktrack ? 0.30 : 0.25)
+    );
+    const minBacktrackLength = isCrossParagraphBacktrack ? 10 : 8;
+    const canBacktrackOnInterim = spokenNorm.length >= 16 && bestRawScore >= 0.88;
+
+    if (
+      (isFinal || canBacktrackOnInterim) &&
+      spokenNorm.length >= minBacktrackLength &&
+      bestRawScore >= backtrackThreshold &&
+      bestRawScore > currentScore + 0.25
+    ) {
       return {
         matchedSegmentIndex: bestIdx,
         similarityScore: bestRawScore,

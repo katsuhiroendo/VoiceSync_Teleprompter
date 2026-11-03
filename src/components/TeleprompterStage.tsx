@@ -255,9 +255,12 @@ export function TeleprompterStage({
     [animateScrollToTarget]
   );
 
-  // Keep track of the normalized transcript when we last advanced via early-trigger,
-  // so the remaining words of the previous phrase don't re-trigger another advance on the new phrase.
+  // Keep track of the normalized transcript & source segment when we last advanced,
+  // so the remaining words of the previous phrase don't cause ping-pong backtracking or double advances.
   const lastAdvanceSpokenLengthRef = useRef<number>(0);
+  const lastAdvanceResultIndexRef = useRef<number>(-1);
+  const lastAdvancedFromIndexRef = useRef<number | null>(null);
+  const lastAdvanceTimestampRef = useRef<number>(0);
 
   // Process recognized speech (from microphone or debug simulator) and match against script
   const processRecognizedSpeech = useCallback(
@@ -266,22 +269,40 @@ export function TeleprompterStage({
       setIsInterimTranscript(!event.isFinal);
       setSpeechStatus('matching');
 
-      // If we recently advanced early during an ongoing interim stream, slice only the newly spoken tail
-      // or full transcript if a new resultIndex started.
-      let effectiveTranscript = event.transcript;
-      if (
-        !event.isFinal &&
-        lastAdvanceSpokenLengthRef.current > 0 &&
-        event.transcript.length > lastAdvanceSpokenLengthRef.current
-      ) {
-        effectiveTranscript = event.transcript.slice(
-          Math.max(0, lastAdvanceSpokenLengthRef.current - 4)
-        );
-      } else if (
-        event.transcript.length < lastAdvanceSpokenLengthRef.current
-      ) {
+      const now = Date.now();
+      const timeSinceLastAdvance = now - lastAdvanceTimestampRef.current;
+
+      // Reset offset tracking if Web Speech API moved to a brand-new recognition utterance (resultIndex)
+      if (event.resultIndex !== lastAdvanceResultIndexRef.current) {
         lastAdvanceSpokenLengthRef.current = 0;
       }
+
+      // If we already advanced during this same recognition utterance (resultIndex),
+      // slice only the newly spoken tail so the earlier sentence's words never pull us backward.
+      let effectiveTranscript = event.transcript;
+      if (
+        lastAdvanceSpokenLengthRef.current > 0 &&
+        event.resultIndex === lastAdvanceResultIndexRef.current
+      ) {
+        if (event.transcript.length > lastAdvanceSpokenLengthRef.current) {
+          effectiveTranscript = event.transcript.slice(
+            Math.max(0, lastAdvanceSpokenLengthRef.current - 2)
+          );
+        } else {
+          // Final confirmation of the exact same utterance that already triggered an early advance:
+          // hold steady on the new paragraph/segment without re-evaluating the old sentence!
+          setTimeout(() => {
+            setSpeechStatus((prev) =>
+              prev === 'matching' ? 'listening' : prev
+            );
+          }, 200);
+          return;
+        }
+      }
+
+      // Protect against ping-pong backtracking to the segment we just advanced from within the last 6 seconds
+      const preventBacktrackToIndex =
+        timeSinceLastAdvance < 6000 ? lastAdvancedFromIndexRef.current : null;
 
       const evaluation = findBestMatchingSegment(
         effectiveTranscript,
@@ -291,6 +312,7 @@ export function TeleprompterStage({
           sensitivity: settingsRef.current.trackingSensitivity,
           advanceTriggerRatio: settingsRef.current.advanceTriggerRatio,
           isFinal: event.isFinal,
+          preventBacktrackToIndex,
         }
       );
 
@@ -300,17 +322,21 @@ export function TeleprompterStage({
         evaluation.shouldAdvance &&
         evaluation.matchedSegmentIndex !== activeIndexRef.current
       ) {
+        const prevIdx = activeIndexRef.current;
         activeIndexRef.current = evaluation.matchedSegmentIndex;
         setActiveSegmentIndex(evaluation.matchedSegmentIndex);
         scrollToSegment(evaluation.matchedSegmentIndex);
 
-        if (evaluation.reason === 'early-trigger-advance' && !event.isFinal) {
+        if (evaluation.matchedSegmentIndex > prevIdx) {
+          lastAdvancedFromIndexRef.current = prevIdx;
+          lastAdvanceTimestampRef.current = now;
+          lastAdvanceResultIndexRef.current = event.resultIndex;
           lastAdvanceSpokenLengthRef.current = event.transcript.length;
         } else {
+          // Intentional backtrack reread
+          lastAdvancedFromIndexRef.current = null;
           lastAdvanceSpokenLengthRef.current = 0;
         }
-      } else if (event.isFinal) {
-        lastAdvanceSpokenLengthRef.current = 0;
       }
 
       // Restore status badge to listening after brief matching indicator
