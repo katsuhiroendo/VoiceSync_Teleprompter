@@ -41,6 +41,10 @@ import {
   formatBytesHuman,
 } from '@/lib/recordingStorage';
 import {
+  CountdownController,
+  CountdownDisplayStep,
+} from '@/lib/countdownHelper';
+import {
   Play,
   Pause,
   RotateCcw,
@@ -184,10 +188,21 @@ export function TeleprompterStage({
     string | null
   >(null);
   const [wakeLockSupported, setWakeLockSupported] = useState<boolean>(true);
+  // Phase 1: Recording Start Countdown & Post-Record Silent Wait states
+  const [countdownStep, setCountdownStep] =
+    useState<CountdownDisplayStep>(null);
+  const [isWaitingPostRecordSilence, setIsWaitingPostRecordSilence] =
+    useState<boolean>(false);
 
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const sessionWriterRef = useRef<ProgressiveRecordingSessionWriter | null>(
+    null
+  );
+  const countdownControllerRef = useRef<CountdownController>(
+    new CountdownController()
+  );
+  const postRecordSilenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
   const wakeLockSentinelRef = useRef<{ release: () => Promise<void> } | null>(
@@ -816,13 +831,44 @@ export function TeleprompterStage({
     []
   );
 
-  // Start video recording on the MacBook / USB Smartphone camera with progressive 5s chunk saving (Phase 6)
+  // Cancel active recording start countdown (Phase 1 Section 3.3)
+  const handleCancelCountdown = useCallback(() => {
+    countdownControllerRef.current.cancel({
+      onStep: setCountdownStep,
+    });
+    if (postRecordSilenceTimerRef.current) {
+      clearTimeout(postRecordSilenceTimerRef.current);
+      postRecordSilenceTimerRef.current = null;
+    }
+    setIsWaitingPostRecordSilence(false);
+  }, []);
+
+  // Start video recording on the MacBook / USB Smartphone camera with Countdown (Phase 1) & Progressive 5s Chunk Saving (Phase 6)
   const handleStartVideoRecording = useCallback(async () => {
+    // Prevent duplicate countdown or duplicate recording start (Section 3.5)
+    if (
+      countdownControllerRef.current.isRunning() ||
+      cameraStatus === 'recording'
+    ) {
+      return;
+    }
+
     let stream = cameraStreamRef.current;
     if (!stream || cameraStatus === 'off' || cameraStatus === 'error') {
       stream = await startCameraStream();
     }
     if (!stream) return;
+
+    // Verify camera & microphone tracks are alive before starting countdown (Section 3.3)
+    const liveVideoTracks = stream
+      .getVideoTracks()
+      .filter((t) => t.readyState === 'live');
+    if (liveVideoTracks.length === 0) {
+      setCameraError(
+        'カメラ映像ストリームが有効ではありません。カメラ接続を確認してください。'
+      );
+      return;
+    }
 
     // Pre-recording storage check (8.7)
     const est = await estimateBrowserStorage();
@@ -835,151 +881,223 @@ export function TeleprompterStage({
       );
     }
 
-    // Monitor unexpected camera or microphone track disconnection during recording (8.8)
-    stream.getVideoTracks().forEach((track) => {
-      track.onended = () => {
+    const beginActualRecordingAfterCountdown = async () => {
+      const currentStream = cameraStreamRef.current;
+      if (
+        !currentStream ||
+        currentStream
+          .getVideoTracks()
+          .filter((t) => t.readyState === 'live').length === 0
+      ) {
         setCameraError(
-          '⚠️ カメラの接続が切断されました（USBケーブル抜け等）。そこまでの録画データは自動保存されています。'
+          'カウントダウン中にカメラ接続が失われたため、録画開始を中止しました。'
         );
-        if (
-          mediaRecorderRef.current &&
-          mediaRecorderRef.current.state !== 'inactive'
-        ) {
-          mediaRecorderRef.current.stop();
-        }
-      };
-    });
-    stream.getAudioTracks().forEach((track) => {
-      track.onended = () => {
-        setCameraError(
-          '⚠️ マイクの接続が切断されました。音声入力を確認してください。'
-        );
-      };
-    });
-
-    // Clean up previous recorded blob URL if present
-    if (recordedClip?.url) {
-      URL.revokeObjectURL(recordedClip.url);
-      setRecordedClip(null);
-    }
-
-    const { mimeType, extension } = selectSupportedVideoMimeType();
-    const videoLabel =
-      stream.getVideoTracks()[0]?.label ||
-      videoDevices.find((d) => d.deviceId === selectedDeviceId)?.label ||
-      'カメラ';
-    const audioLabel =
-      stream.getAudioTracks()[0]?.label ||
-      audioDevices.find((a) => a.deviceId === selectedAudioDeviceId)?.label ||
-      'マイク';
-
-    const sessionWriter = new ProgressiveRecordingSessionWriter(
-      {
-        scriptId: script.id,
-        scriptTitle: script.title,
-        videoDeviceLabel: videoLabel,
-        audioDeviceLabel: audioLabel,
-        resolution: settingsRef.current.cameraResolution,
-        aspectRatio: settingsRef.current.cameraAspectRatio,
-        mimeType: mimeType || 'video/webm',
-        extension,
-      },
-      {
-        onProgress: (meta, pendingCount) => {
-          setActiveSessionMeta(meta);
-          setPendingChunkWrites(pendingCount);
-        },
-        onQueueBacklogWarning: (pendingCount) => {
-          setPendingChunkWrites(pendingCount);
-          setCameraError(
-            `録画データのストレージ書き込みが遅延しています（待機チャンク: ${pendingCount}件）。タブを閉じずにお待ちください。`
-          );
-        },
-        onWriteError: (msg) => {
-          setCameraError(msg);
-        },
+        return;
       }
-    );
 
-    await sessionWriter.initializeSession();
-    sessionWriterRef.current = sessionWriter;
-    setActiveSessionMeta(sessionWriter.getMeta());
+      // Monitor unexpected camera or microphone track disconnection during recording (8.8)
+      currentStream.getVideoTracks().forEach((track) => {
+        track.onended = () => {
+          setCameraError(
+            '⚠️ カメラの接続が切断されました（USBケーブル抜け等）。そこまでの録画データは自動保存されています。'
+          );
+          if (
+            mediaRecorderRef.current &&
+            mediaRecorderRef.current.state !== 'inactive'
+          ) {
+            mediaRecorderRef.current.stop();
+          }
+        };
+      });
+      currentStream.getAudioTracks().forEach((track) => {
+        track.onended = () => {
+          setCameraError(
+            '⚠️ マイクの接続が切断されました。音声入力を確認してください。'
+          );
+        };
+      });
 
-    try {
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
+      // Clean up previous recorded blob URL if present
+      if (recordedClip?.url) {
+        URL.revokeObjectURL(recordedClip.url);
+        setRecordedClip(null);
+      }
 
-      recorder.ondataavailable = (ev: BlobEvent) => {
-        if (ev.data && ev.data.size > 0) {
-          const elapsedSec = Math.max(
+      const { mimeType, extension } = selectSupportedVideoMimeType();
+      const videoLabel =
+        currentStream.getVideoTracks()[0]?.label ||
+        videoDevices.find((d) => d.deviceId === selectedDeviceId)?.label ||
+        'カメラ';
+      const audioLabel =
+        currentStream.getAudioTracks()[0]?.label ||
+        audioDevices.find((a) => a.deviceId === selectedAudioDeviceId)?.label ||
+        'マイク';
+
+      const sessionWriter = new ProgressiveRecordingSessionWriter(
+        {
+          scriptId: script.id,
+          scriptTitle: script.title,
+          videoDeviceLabel: videoLabel,
+          audioDeviceLabel: audioLabel,
+          resolution: settingsRef.current.cameraResolution,
+          aspectRatio: settingsRef.current.cameraAspectRatio,
+          mimeType: mimeType || 'video/webm',
+          extension,
+        },
+        {
+          onProgress: (meta, pendingCount) => {
+            setActiveSessionMeta(meta);
+            setPendingChunkWrites(pendingCount);
+          },
+          onQueueBacklogWarning: (pendingCount) => {
+            setPendingChunkWrites(pendingCount);
+            setCameraError(
+              `録画データのストレージ書き込みが遅延しています（待機チャンク: ${pendingCount}件）。タブを閉じずにお待ちください。`
+            );
+          },
+          onWriteError: (msg) => {
+            setCameraError(msg);
+          },
+        }
+      );
+
+      await sessionWriter.initializeSession();
+      sessionWriterRef.current = sessionWriter;
+      setActiveSessionMeta(sessionWriter.getMeta());
+
+      try {
+        const recorder = mimeType
+          ? new MediaRecorder(currentStream, { mimeType })
+          : new MediaRecorder(currentStream);
+
+        recorder.ondataavailable = (ev: BlobEvent) => {
+          if (ev.data && ev.data.size > 0) {
+            const elapsedSec = Math.max(
+              1,
+              Math.round((Date.now() - recordingStartMsRef.current) / 1000)
+            );
+            sessionWriter.enqueueChunk(ev.data, elapsedSec);
+          }
+        };
+
+        // Section 3.3: Verify MediaRecorder actually entered 'recording' state via onstart before starting voice tracking
+        recorder.onstart = () => {
+          if (recorder.state !== 'recording') {
+            setCameraError(
+              '録画の開始状態を確認できませんでした。音声追従の単独起動を防止しました。'
+            );
+            return;
+          }
+
+          recordingStartMsRef.current = Date.now();
+          setRecordingSeconds(0);
+          setCameraStatus('recording');
+
+          if (recordingTimerRef.current)
+            clearInterval(recordingTimerRef.current);
+          recordingTimerRef.current = setInterval(() => {
+            setRecordingSeconds(
+              Math.floor((Date.now() - recordingStartMsRef.current) / 1000)
+            );
+          }, 500);
+
+          // Automatically start teleprompter voice/constant scrolling after optional post-record silent wait (0-3s)
+          if (settingsRef.current.autoStartPrompterOnRecord) {
+            const silentWaitSec = Math.max(
+              0,
+              Math.min(3, settingsRef.current.postRecordSilentWaitSec ?? 0)
+            );
+            if (silentWaitSec > 0) {
+              setIsWaitingPostRecordSilence(true);
+              if (postRecordSilenceTimerRef.current) {
+                clearTimeout(postRecordSilenceTimerRef.current);
+              }
+              postRecordSilenceTimerRef.current = setTimeout(() => {
+                setIsWaitingPostRecordSilence(false);
+                if (mediaRecorderRef.current?.state === 'recording') {
+                  setIsPlaying(true);
+                }
+              }, silentWaitSec * 1000);
+            } else {
+              setIsPlaying(true);
+            }
+          }
+        };
+
+        recorder.onerror = () => {
+          setIsWaitingPostRecordSilence(false);
+          setCameraError(
+            'MediaRecorderで録画エラーが発生しました。音声追従を停止しました。'
+          );
+          setIsPlaying(false);
+        };
+
+        recorder.onstop = async () => {
+          if (postRecordSilenceTimerRef.current) {
+            clearTimeout(postRecordSilenceTimerRef.current);
+            postRecordSilenceTimerRef.current = null;
+          }
+          setIsWaitingPostRecordSilence(false);
+          setIsSavingRecording(true);
+          const durationSec = Math.max(
             1,
             Math.round((Date.now() - recordingStartMsRef.current) / 1000)
           );
-          sessionWriter.enqueueChunk(ev.data, elapsedSec);
-        }
-      };
+          try {
+            const finalMeta = await sessionWriter.finalizeSession(durationSec);
+            setActiveSessionMeta(finalMeta);
+            setPendingChunkWrites(0);
 
-      recorder.onstop = async () => {
-        setIsSavingRecording(true);
-        const durationSec = Math.max(
-          1,
-          Math.round((Date.now() - recordingStartMsRef.current) / 1000)
-        );
-        try {
-          const finalMeta = await sessionWriter.finalizeSession(durationSec);
-          setActiveSessionMeta(finalMeta);
-          setPendingChunkWrites(0);
-
-          const { blob } = await reconstructSessionVideoBlob(
-            finalMeta.sessionId
-          );
-          if (blob) {
-            const finalMime =
-              recorder.mimeType || mimeType || 'video/webm';
-            const url = URL.createObjectURL(blob);
-            setRecordedClip({
-              url,
-              blob,
-              mimeType: finalMime,
-              extension: finalMime.includes('mp4') ? 'mp4' : extension,
-              durationSec,
-              createdAt: finalMeta.startedAt,
-            });
+            const { blob } = await reconstructSessionVideoBlob(
+              finalMeta.sessionId
+            );
+            if (blob) {
+              const finalMime =
+                recorder.mimeType || mimeType || 'video/webm';
+              const url = URL.createObjectURL(blob);
+              setRecordedClip({
+                url,
+                blob,
+                mimeType: finalMime,
+                extension: finalMime.includes('mp4') ? 'mp4' : extension,
+                durationSec,
+                createdAt: finalMeta.startedAt,
+              });
+            }
+            const updatedEst = await estimateBrowserStorage();
+            setStorageInfo(updatedEst);
+          } finally {
+            setIsSavingRecording(false);
+            setCameraStatus(cameraStreamRef.current ? 'ready' : 'off');
           }
-          const updatedEst = await estimateBrowserStorage();
-          setStorageInfo(updatedEst);
-        } finally {
-          setIsSavingRecording(false);
-          setCameraStatus(cameraStreamRef.current ? 'ready' : 'off');
-        }
-      };
+        };
 
-      // Phase 6 (8.2): Use 5-second timeslice (5000ms) for progressive chunk saving without holding all video in RAM
-      recorder.start(5000);
-      mediaRecorderRef.current = recorder;
-      recordingStartMsRef.current = Date.now();
-      setRecordingSeconds(0);
-      setCameraStatus('recording');
-
-      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-      recordingTimerRef.current = setInterval(() => {
-        setRecordingSeconds(
-          Math.floor((Date.now() - recordingStartMsRef.current) / 1000)
+        // Phase 6 (8.2): Use 5-second timeslice (5000ms) for progressive chunk saving without holding all video in RAM
+        mediaRecorderRef.current = recorder;
+        recorder.start(5000);
+      } catch {
+        setIsWaitingPostRecordSilence(false);
+        setCameraError(
+          '録画の開始に失敗しました。音声追従のみの開始を防止しました。'
         );
-      }, 500);
-
-      // Automatically start teleprompter voice/constant scrolling if enabled in settings
-      if (settingsRef.current.autoStartPrompterOnRecord && !isPlaying) {
-        setIsPlaying(true);
       }
-    } catch {
-      setCameraError('録画の開始に失敗しました。ブラウザの対応状況を確認してください。');
-    }
+    };
+
+    countdownControllerRef.current.start(
+      settingsRef.current.countdownSeconds ?? 3,
+      {
+        beepOnTick: Boolean(settingsRef.current.countdownBeepEnabled),
+        beepOnRec: Boolean(settingsRef.current.recStartBeepEnabled),
+      },
+      {
+        onStep: setCountdownStep,
+        onComplete: beginActualRecordingAfterCountdown,
+        onCancel: () => setCountdownStep(null),
+      }
+    );
   }, [
     audioDevices,
     cameraStatus,
-    isPlaying,
     recordedClip,
     script.id,
     script.title,
@@ -991,6 +1109,7 @@ export function TeleprompterStage({
 
   // Stop video recording
   const handleStopVideoRecording = useCallback(() => {
+    handleCancelCountdown();
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
@@ -1002,7 +1121,7 @@ export function TeleprompterStage({
       mediaRecorderRef.current.stop();
     }
     setIsPlaying(false);
-  }, []);
+  }, [handleCancelCountdown]);
 
   // Download recorded video clip to MacBook
   const handleDownloadRecordedVideo = useCallback(() => {
@@ -1023,7 +1142,12 @@ export function TeleprompterStage({
 
   // Ensure camera & blob URLs are cleaned up on unmount
   useEffect(() => {
+    const countdownCtrl = countdownControllerRef.current;
     return () => {
+      countdownCtrl.cancel();
+      if (postRecordSilenceTimerRef.current) {
+        clearTimeout(postRecordSilenceTimerRef.current);
+      }
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current);
       }
@@ -1250,6 +1374,12 @@ export function TeleprompterStage({
         return;
       }
 
+      if (e.code === 'Escape' && countdownStep !== null) {
+        e.preventDefault();
+        handleCancelCountdown();
+        return;
+      }
+
       if (e.code === 'Space') {
         e.preventDefault();
         setIsPlaying((prev) => !prev);
@@ -1273,7 +1403,14 @@ export function TeleprompterStage({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeSegmentIndex, handleResetToTop, scrollToSegment, segments.length]);
+  }, [
+    activeSegmentIndex,
+    countdownStep,
+    handleCancelCountdown,
+    handleResetToTop,
+    scrollToSegment,
+    segments.length,
+  ]);
 
   const statusMeta = STATUS_LABELS[speechStatus];
 
@@ -1927,6 +2064,45 @@ export function TeleprompterStage({
           </div>
         )}
 
+        {/* Phase 1 (Section 3.2): Recording Start Countdown Overlay (3 -> 2 -> 1 -> REC) */}
+        {countdownStep !== null && (
+          <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/45 backdrop-blur-[2px]">
+            <div className="flex flex-col items-center rounded-3xl border border-white/20 bg-zinc-950/85 px-10 py-8 shadow-2xl">
+              <span className="text-xs font-semibold tracking-widest text-zinc-400 uppercase">
+                {countdownStep === 'REC'
+                  ? '撮影スタート'
+                  : 'まもなくカメラ録画を開始します'}
+              </span>
+              <div
+                className={`mt-2 font-mono font-black tracking-tighter drop-shadow-[0_0_28px_rgba(244,63,94,0.65)] ${
+                  countdownStep === 'REC'
+                    ? 'text-6xl text-rose-500 sm:text-7xl'
+                    : 'text-7xl text-white sm:text-8xl'
+                }`}
+              >
+                {countdownStep === 'REC' ? '● REC' : countdownStep}
+              </div>
+              {typeof countdownStep === 'number' && (
+                <button
+                  type="button"
+                  onClick={handleCancelCountdown}
+                  className="mt-5 flex items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-200 transition hover:bg-zinc-800 hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  <span>カウントダウンをキャンセル (Esc)</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Post-record silent wait indicator badge */}
+        {isWaitingPostRecordSilence && (
+          <div className="pointer-events-none absolute top-4 left-1/2 z-30 -translate-x-1/2 rounded-full border border-amber-400/50 bg-zinc-950/90 px-4 py-1.5 text-xs font-semibold text-amber-300 shadow-lg">
+            録画開始後の無音待機中（{settings.postRecordSilentWaitSec}秒後に音声追従を開始します）...
+          </div>
+        )}
+
         {/* Scrollable Script Viewport */}
         <div
           ref={scrollContainerRef}
@@ -2182,6 +2358,16 @@ export function TeleprompterStage({
               <Square className="h-3.5 w-3.5 fill-current" />
               <span>録画停止 ({formatDurationTimer(recordingSeconds)})</span>
             </button>
+          ) : typeof countdownStep === 'number' ? (
+            <button
+              type="button"
+              onClick={handleCancelCountdown}
+              className="flex min-h-[44px] items-center gap-2 rounded-xl border border-amber-500/60 bg-amber-500/20 px-4 py-2.5 text-xs font-bold text-amber-200 transition hover:bg-amber-500/30 active:scale-95"
+              title="カウントダウンをキャンセル"
+            >
+              <X className="h-3.5 w-3.5" />
+              <span>開始キャンセル ({countdownStep}秒)</span>
+            </button>
           ) : (
             <button
               type="button"
@@ -2190,7 +2376,12 @@ export function TeleprompterStage({
               title="MacBookカメラで動画撮影を開始（プロンプター連動）"
             >
               <Circle className="h-3.5 w-3.5 fill-rose-500 text-rose-500" />
-              <span>カメラ録画開始</span>
+              <span>
+                カメラ録画開始
+                {settings.countdownSeconds > 0
+                  ? ` (${settings.countdownSeconds}秒)`
+                  : ''}
+              </span>
             </button>
           )}
 

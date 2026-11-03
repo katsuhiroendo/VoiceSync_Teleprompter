@@ -1115,6 +1115,103 @@ export function SettingsModal({
               </div>
             </div>
 
+            {/* Phase 1 (Section 3.4): Recording Start Countdown & Post-Record Silent Wait Settings */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-2.5 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <span className="block text-xs font-medium text-zinc-300">
+                  撮影開始カウントダウン時間
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {(
+                    [
+                      { sec: 0, label: 'なし (0秒)' },
+                      { sec: 3, label: '3秒 (標準)' },
+                      { sec: 5, label: '5秒' },
+                      { sec: 10, label: '10秒' },
+                    ] as const
+                  ).map((item) => (
+                    <button
+                      key={item.sec}
+                      type="button"
+                      onClick={() =>
+                        onUpdateSettings({ countdownSeconds: item.sec })
+                      }
+                      className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
+                        settings.countdownSeconds === item.sec
+                          ? 'bg-rose-500 text-white'
+                          : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-col gap-1.5 border-t border-zinc-800 pt-2.5 text-xs text-zinc-300">
+                  <label className="flex items-center justify-between">
+                    <span>カウントダウン音（ピッ・ピッ）を鳴らす</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.countdownBeepEnabled}
+                      onChange={(e) =>
+                        onUpdateSettings({
+                          countdownBeepEnabled: e.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 accent-rose-500"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between">
+                    <span>REC開始通知音を鳴らす</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.recStartBeepEnabled}
+                      onChange={(e) =>
+                        onUpdateSettings({
+                          recStartBeepEnabled: e.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 accent-rose-500"
+                    />
+                  </label>
+                  <p className="text-[10px] text-zinc-500">
+                    ※ 通知音はマイク録音への混入を防ぐため標準ではOFFです。
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2.5 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+                <div className="flex justify-between text-xs font-medium">
+                  <span className="text-zinc-300">
+                    録画開始後の無音待機時間（話し始めの間）
+                  </span>
+                  <span className="font-mono text-rose-400">
+                    {settings.postRecordSilentWaitSec.toFixed(1)} 秒
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={3}
+                  step={0.5}
+                  value={settings.postRecordSilentWaitSec}
+                  onChange={(e) =>
+                    onUpdateSettings({
+                      postRecordSilentWaitSec: Number(e.target.value),
+                    })
+                  }
+                  className="w-full accent-rose-500"
+                />
+                <div className="flex justify-between text-[10px] text-zinc-500">
+                  <span>0秒 (即時追従)</span>
+                  <span>1.0秒</span>
+                  <span>3.0秒 (ゆったり開始)</span>
+                </div>
+                <p className="text-[10px] leading-relaxed text-zinc-400">
+                  録画が開始されてから音声追従を開始するまでの呼吸時間です。動画先頭の余白を作るのに便利です。
+                </p>
+              </div>
+            </div>
+
             {/* USB Smartphone Camera Quick Guide */}
             <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-3.5 text-[11px] leading-relaxed text-zinc-400">
               <p className="font-semibold text-zinc-200">
