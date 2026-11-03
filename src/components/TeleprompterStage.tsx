@@ -246,11 +246,14 @@ export function TeleprompterStage({
       const readingAnchorPx =
         (settingsRef.current.readingLinePositionVh / 100) * containerHeight;
 
+      // Anchor the top of the active segment right at the reading guide line (with a small 12px breathing room)
+      // instead of pushing 35% of the segment above the guide line. This ensures that when readingLinePositionVh
+      // is set near the top (e.g. 15% in Camera Eyeline Mode), the previous line's ending stays visible above
+      // and the active multi-line paragraph never gets clipped at the top of the viewport.
       const targetOffsetTop = targetEl.offsetTop;
-      const targetHeight = targetEl.offsetHeight;
       const desiredScrollTop = Math.max(
         0,
-        targetOffsetTop - readingAnchorPx + targetHeight * 0.35
+        targetOffsetTop - Math.max(24, readingAnchorPx - 8)
       );
 
       animateScrollToTarget(desiredScrollTop);
@@ -291,7 +294,7 @@ export function TeleprompterStage({
       // or shared vocabulary ("テレプロンプター", "撮影") will falsely match a paragraph 3-4 segments ahead!
       // Therefore:
       // 1) If we already advanced within this resultIndex, slice strictly after the advance point.
-      // 2) Even if we haven't advanced in this resultIndex, cap the evaluated window to the most recent 24 normalized chars.
+      // 2) Even if we haven't advanced in this resultIndex, cap the evaluated window to the length of the current segment (+12 chars margin).
       let effectiveTranscript = fullSpokenNorm;
       if (
         lastAdvanceSpokenLengthRef.current > 0 &&
@@ -316,8 +319,11 @@ export function TeleprompterStage({
         );
       }
 
-      if (effectiveTranscript.length > 26) {
-        effectiveTranscript = effectiveTranscript.slice(-26);
+      const currentSegNormLen =
+        segmentsRef.current[activeIndexRef.current]?.normalizedText.length || 35;
+      const maxWindowChars = Math.max(36, currentSegNormLen + 10);
+      if (effectiveTranscript.length > maxWindowChars) {
+        effectiveTranscript = effectiveTranscript.slice(-maxWindowChars);
       }
 
       // Protect against ping-pong backtracking or residual double-advancing from the segment we just left

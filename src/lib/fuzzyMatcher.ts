@@ -84,7 +84,9 @@ export function evaluateSpokenAgainstSegment(
     if (query.length < 2) continue;
 
     // 1. 完全部分文字列一致チェック
-    if (segmentNorm.includes(query)) {
+    // ※ 2文字（「ます」「です」「して」など）の短い一致だけで高スコア（0.80以上）を与えてしまうと、
+    //    まだ読んでいない次の文の語尾に反応して早期スクロールしてしまうため、4文字以上の一致に限定する。
+    if (query.length >= 4 && segmentNorm.includes(query)) {
       const coverage = Math.min(
         1,
         query.length / Math.min(12, segmentNorm.length)
@@ -161,9 +163,9 @@ export function estimateSegmentProgressRatio(
 
   let maxProgress = 0;
 
-  // 1. 発話末尾の複数ウィンドウ長（3〜10文字）で完全一致または高類似度スライスを探索
+  // 1. 発話末尾の複数ウィンドウ長（4〜10文字）で完全一致または高類似度スライスを探索
   const tailSource = spokenNorm.slice(-Math.min(14, spokenNorm.length));
-  const candidateLengths = [10, 8, 6, 5, 4, 3].filter(
+  const candidateLengths = [10, 8, 6, 5, 4].filter(
     (len) => len <= tailSource.length && len <= segLen
   );
 
@@ -177,10 +179,16 @@ export function estimateSegmentProgressRatio(
     }
 
     // 漢字揺れなどで完全一致しない場合はスライディングウィンドウでBigram類似度を評価
-    for (let pos = 0; pos <= segLen - len; pos++) {
+    // ※ 発話文字数に対して極端に先（spokenNorm.length * 1.45 より後ろ）の位置と偶然マッチして
+    //    文の途中なのに進捗90%と誤判定されないよう探索上限位置を制限する
+    const maxPlausiblePos = Math.min(
+      segLen - len,
+      Math.max(8, Math.ceil(spokenNorm.length * 1.45))
+    );
+    for (let pos = 0; pos <= maxPlausiblePos; pos++) {
       const slice = segmentNorm.slice(pos, pos + len);
       const dice = computeBigramDiceSimilarity(tailQuery, slice);
-      if (dice >= 0.48) {
+      if (dice >= 0.56) {
         const ratio = (pos + len) / segLen;
         if (ratio > maxProgress) {
           maxProgress = ratio;
@@ -189,14 +197,20 @@ export function estimateSegmentProgressRatio(
     }
   }
 
-  // 2. 直近発話（末尾6文字）に含まれる2文字Bigramがセグメント後半のどこに出現するかで補完
+  // 2. 直近発話（末尾6文字）に含まれる2文字Bigramがセグメント内の妥当な到達範囲のどこに出現するかで補完
   const recentTail = spokenNorm.slice(-Math.min(6, spokenNorm.length));
   if (recentTail.length >= 2) {
     let matchedBigrams = 0;
     let latestBigramEnd = 0;
+    const maxPlausibleEnd = Math.min(
+      segLen,
+      Math.max(10, Math.ceil(spokenNorm.length * 1.45))
+    );
+    const plausibleSegmentSlice = segmentNorm.slice(0, maxPlausibleEnd);
+
     for (let i = 0; i < recentTail.length - 1; i++) {
       const bg = recentTail.slice(i, i + 2);
-      const idx = segmentNorm.lastIndexOf(bg);
+      const idx = plausibleSegmentSlice.lastIndexOf(bg);
       if (idx !== -1) {
         matchedBigrams++;
         if (idx + 2 > latestBigramEnd) {
@@ -216,14 +230,14 @@ export function estimateSegmentProgressRatio(
   // 3. 発話全体の文字長比率による下限補完：
   // 途中認識(interim)では未確定の語尾がすべてひらがな（例：「自然に維持」→「しぜんにいじ」）になることが多く、
   // 原稿が漢字だと末尾の文字一致だけでは進捗率が過小評価されるため、
-  // セグメント前半と高い類似度（>= 0.55）で一致している場合は発話文字長比率（漢字1字≒ひらがな1.35字換算）も加味する
+  // セグメント冒頭と高い類似度（>= 0.58）で一致している場合のみ、ひらがな膨張分を補正した係数(0.84)で補完する
   const headSlice = segmentNorm.slice(0, Math.min(segLen, spokenNorm.length + 4));
   const headSim = computeBigramDiceSimilarity(
     spokenNorm.slice(0, Math.min(10, spokenNorm.length)),
     headSlice.slice(0, Math.min(10, headSlice.length))
   );
-  if (headSim >= 0.5) {
-    const lengthBasedRatio = Math.min(0.95, (spokenNorm.length * 0.88) / segLen);
+  if (headSim >= 0.58) {
+    const lengthBasedRatio = Math.min(0.90, (spokenNorm.length * 0.84) / segLen);
     if (lengthBasedRatio > maxProgress) {
       maxProgress = lengthBasedRatio;
     }
@@ -337,14 +351,9 @@ export function findBestMatchingSegment(
   }
 
   // 現在のセグメントが段落の最終フレーズ（次が別段落）かどうかを判定
-  const isEndOfParagraph =
-    safeCurrentIdx + 1 < segments.length &&
-    segments[safeCurrentIdx + 1].paragraphIndex > currentSeg.paragraphIndex;
-
-  // 段落の切れ目では少し早めに次の段落を視界へ入れるため、トリガー位置を5%前倒しする
-  const effectiveTriggerRatio = isEndOfParagraph
-    ? Math.max(0.35, advanceTriggerRatio - 0.05)
-    : advanceTriggerRatio;
+  // ユーザーが設定した先行送りタイミング（advanceTriggerRatio）を忠実に適用する
+  // （以前は段落末で -0.05 前倒ししていたため、設定より早くスクロールして最後の部分が読めない原因になっていた）
+  const effectiveTriggerRatio = advanceTriggerRatio;
 
   const progressRatio = estimateSegmentProgressRatio(
     spokenNorm,
@@ -427,9 +436,9 @@ export function findBestMatchingSegment(
   // 1. 同じセグメントに留まる場合
   if (delta === 0) {
     // 確定結果(isFinal)で文末付近に到達した場合、またはユーザーが早め遷移(advanceTriggerRatio <= 0.90)を設定していて
-    // 途中認識(interim)でも指定割合を通過した場合は、文末を言い切る前に次のセグメント・段落へ一歩進める
+    // 途中認識(interim)でも指定割合を通過した場合は次のセグメントへ進める。
     const allowEarlyInterimAdvance =
-      effectiveTriggerRatio <= 0.90 &&
+      effectiveTriggerRatio <= 0.92 &&
       progressRatio >= effectiveTriggerRatio &&
       currentScore >= baseThreshold * 0.85;
 

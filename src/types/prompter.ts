@@ -103,7 +103,7 @@ export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
   constantScrollSpeed: 65,
   scrollSmoothness: 0.14,
   trackingSensitivity: 0.65,
-  advanceTriggerRatio: 0.70,
+  advanceTriggerRatio: 0.85,
   trackingSpeed: 1.0,
   scrollAnimationMs: 320,
   showDebugOverlay: true,

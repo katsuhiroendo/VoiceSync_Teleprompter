@@ -196,21 +196,21 @@ describe('VoiceSync Fuzzy Matcher & 10 Required Test Cases (Section 14)', () => 
     expect(strictRes.shouldAdvance).toBe(false);
     expect(strictRes.matchedSegmentIndex).toBe(seg2Idx);
 
-    // With 0.60 ratio (60% setting), it advances to the next paragraph/segment immediately during interim speech
-    const earlyRes60 = findBestMatchingSegment(
+    // With 0.55 ratio (55% early setting), it advances to the next paragraph/segment immediately during interim speech
+    const earlyRes55 = findBestMatchingSegment(
       midUtteranceWithKanjiVariation,
       segments,
       {
         currentIndex: seg2Idx,
         sensitivity: defaultSensitivity,
-        advanceTriggerRatio: 0.60,
+        advanceTriggerRatio: 0.55,
         isFinal: false,
       }
     );
-    expect(earlyRes60.progressRatio).toBeGreaterThanOrEqual(0.55);
-    expect(earlyRes60.shouldAdvance).toBe(true);
-    expect(earlyRes60.matchedSegmentIndex).toBe(seg2Idx + 1);
-    expect(earlyRes60.reason).toBe('early-trigger-advance');
+    expect(earlyRes55.progressRatio).toBeGreaterThanOrEqual(0.55);
+    expect(earlyRes55.shouldAdvance).toBe(true);
+    expect(earlyRes55.matchedSegmentIndex).toBe(seg2Idx + 1);
+    expect(earlyRes55.reason).toBe('early-trigger-advance');
   });
 
   it('Anti-Ping-Pong Guard: prevents jumping back to the previous paragraph when finishing the tail of the previous sentence after an early advance', () => {

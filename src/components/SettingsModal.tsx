@@ -729,9 +729,9 @@ export function SettingsModal({
                   className="w-full accent-sky-500"
                 />
                 <div className="flex justify-between text-[10px] text-zinc-500">
-                  <span>40% (かなり早め)</span>
-                  <span>70% (標準)</span>
-                  <span>95% (文末まで待つ)</span>
+                  <span>40% (早め)</span>
+                  <span>85% (標準・文末近く)</span>
+                  <span>95% (完全に言い切ってから)</span>
                 </div>
               </div>
 
