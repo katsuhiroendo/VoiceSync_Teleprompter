@@ -52,7 +52,10 @@ export function SegmentRichRenderer({
     return <>{text}</>;
   }
 
-  const renderSpokenTextWithProgress = (token: SegmentInlineToken) => {
+  const renderSpokenTextWithProgress = (
+    token: SegmentInlineToken,
+    isHighlight = false
+  ) => {
     if (
       !isCurrent ||
       !enableCharProgress ||
@@ -61,12 +64,12 @@ export function SegmentRichRenderer({
       return token.content;
     }
 
+    const completedStyle = isHighlight
+      ? 'underline decoration-current decoration-2 underline-offset-4 font-black'
+      : 'text-sky-300 underline decoration-sky-400/80 decoration-2 underline-offset-8 transition-colors duration-75';
+
     if (completedSpokenChars >= token.spokenEndChar) {
-      return (
-        <span className="text-sky-300 underline decoration-sky-400/80 decoration-2 underline-offset-8 transition-colors duration-75">
-          {token.content}
-        </span>
-      );
+      return <span className={completedStyle}>{token.content}</span>;
     }
 
     const splitOffset = completedSpokenChars - token.spokenStartChar;
@@ -75,9 +78,7 @@ export function SegmentRichRenderer({
 
     return (
       <>
-        <span className="text-sky-300 underline decoration-sky-400/80 decoration-2 underline-offset-8 transition-colors duration-75">
-          {readPart}
-        </span>
+        <span className={completedStyle}>{readPart}</span>
         <span>{unreadPart}</span>
       </>
     );
@@ -121,34 +122,34 @@ export function SegmentRichRenderer({
 
         if (token.type === 'highlight-yellow') {
           return (
-            <strong
+            <mark
               key={idx}
-              className="mx-0.5 rounded-md bg-amber-400/25 px-1.5 py-0.5 font-extrabold text-amber-200 ring-1 ring-amber-400/40"
+              className="mx-0.5 inline-block rounded-md bg-amber-300 px-2 py-0.5 font-bold text-zinc-950 shadow-sm ring-1 ring-amber-400/60"
             >
-              {renderSpokenTextWithProgress(token)}
-            </strong>
+              {renderSpokenTextWithProgress(token, true)}
+            </mark>
           );
         }
 
         if (token.type === 'highlight-sky') {
           return (
-            <strong
+            <mark
               key={idx}
-              className="mx-0.5 rounded-md bg-sky-400/25 px-1.5 py-0.5 font-extrabold text-sky-200 ring-1 ring-sky-400/40"
+              className="mx-0.5 inline-block rounded-md bg-cyan-300 px-2 py-0.5 font-bold text-zinc-950 shadow-sm ring-1 ring-cyan-400/60"
             >
-              {renderSpokenTextWithProgress(token)}
-            </strong>
+              {renderSpokenTextWithProgress(token, true)}
+            </mark>
           );
         }
 
         if (token.type === 'highlight-rose') {
           return (
-            <strong
+            <mark
               key={idx}
-              className="mx-0.5 rounded-md bg-rose-500/25 px-1.5 py-0.5 font-extrabold text-rose-200 ring-1 ring-rose-400/40"
+              className="mx-0.5 inline-block rounded-md bg-rose-500 px-2 py-0.5 font-bold text-white shadow-sm ring-1 ring-rose-400/60"
             >
-              {renderSpokenTextWithProgress(token)}
-            </strong>
+              {renderSpokenTextWithProgress(token, true)}
+            </mark>
           );
         }
 

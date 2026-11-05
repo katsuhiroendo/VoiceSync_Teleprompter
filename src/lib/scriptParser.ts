@@ -439,18 +439,45 @@ export function parseScriptToSegments(content: string): ScriptSegment[] {
       return;
     }
 
-    // まず文末記号（。！？!?）または英語のピリオド＋スペースで分割（ただし [...] や 【...】 内部の句読点では分割しない）
-    const rawSentences = trimmedParagraph
-      .split(/(?<=[。！？!?])(?![^［\[]*[］\]])(?![^【]*】)|(?<=\.\s)/)
+    // ト書き ([...], 【...】) や装飾記法 (**...**, ==...==, !!...!!) を一時的にプレースホルダーに退避し、
+    // 装飾記法内の「！」や「？」で文が意図せず寸断されるのを防ぐ
+    const inlineTokens: string[] = [];
+    const tokenRegex =
+      /(\[[^\]\n]+\]|【[^】\n]+】|\*\*[^*\n]+\*\*|==[^=\n]+==|!![^!\n]+!!)/g;
+    const maskedParagraph = trimmedParagraph.replace(tokenRegex, (match) => {
+      const idx = inlineTokens.length;
+      inlineTokens.push(match);
+      return `\x00TOK_${idx}\x00`;
+    });
+
+    // まず文末記号（。！？!?）または英語のピリオド＋スペースで分割
+    const rawSentences = maskedParagraph
+      .split(/(?<=[。！？!?])|(?<=\.\s+)/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((part) =>
+        part.replace(/\x00TOK_(\d+)\x00/g, (_, id) => inlineTokens[Number(id)])
+      );
 
     rawSentences.forEach((sentence) => {
       // 1文が65文字を超える場合は、読点「、」やカンマ「, 」でさらに自然なフレーズに分割
       if (sentence.length > 65) {
-        const clauses = sentence.split(
-          /(?<=[、,])(?![^［\[]*[］\]])(?![^【]*】)/
-        );
+        const clauseTokens: string[] = [];
+        const maskedSentence = sentence.replace(tokenRegex, (match) => {
+          const idx = clauseTokens.length;
+          clauseTokens.push(match);
+          return `\x00TOK_${idx}\x00`;
+        });
+        const clauses = maskedSentence
+          .split(/(?<=[、,])/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((part) =>
+            part.replace(
+              /\x00TOK_(\d+)\x00/g,
+              (_, id) => clauseTokens[Number(id)]
+            )
+          );
         let buffer = '';
         clauses.forEach((clause) => {
           if ((buffer + clause).length > 50 && buffer.length >= 12) {

@@ -1,8 +1,12 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { ScriptItem, LanguageCode } from '@/types/prompter';
-import { stripStageDirectionsAndFormatting } from '@/lib/scriptParser';
+import {
+  parseScriptToSegments,
+  stripStageDirectionsAndFormatting,
+} from '@/lib/scriptParser';
+import { SegmentRichRenderer } from '@/components/SegmentRichRenderer';
 import {
   Plus,
   Search,
@@ -20,6 +24,9 @@ import {
   Sparkles,
   Hash,
   Highlighter,
+  Eye,
+  Edit3,
+  Columns,
 } from 'lucide-react';
 
 interface ScriptEditorWorkspaceProps {
@@ -53,8 +60,14 @@ export function ScriptEditorWorkspace({
 }: ScriptEditorWorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [saveIndicator, setSaveIndicator] = useState<'saved' | 'saving'>('saved');
+  const [editorTab, setEditorTab] = useState<'edit' | 'preview' | 'split'>('edit');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const previewSegments = useMemo(
+    () => parseScriptToSegments(activeScript.content),
+    [activeScript.content]
+  );
 
   // Insert or wrap text at current cursor selection in the editor textarea
   const handleInsertMarkup = (
@@ -462,15 +475,154 @@ export function ScriptEditorWorkspace({
                   {cue.label}
                 </button>
               ))}
+              <div className="ml-auto flex items-center rounded-xl border border-zinc-800 bg-zinc-950/80 p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setEditorTab('edit')}
+                  className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition ${
+                    editorTab === 'edit'
+                      ? 'bg-zinc-800 text-white shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                  title="原稿編集テキストエリア"
+                >
+                  <Edit3 className="h-3.5 w-3.5" />
+                  <span>入力</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditorTab('preview')}
+                  className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition ${
+                    editorTab === 'preview'
+                      ? 'border border-sky-500/40 bg-sky-500/20 text-sky-300 shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                  title="装飾ハイライト・ト書きバッジのプレビュー表示"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  <span>装飾プレビュー</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditorTab('split')}
+                  className={`hidden md:flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition ${
+                    editorTab === 'split'
+                      ? 'bg-zinc-800 text-white shadow-sm'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                  title="入力とプレビューの2画面同時表示"
+                >
+                  <Columns className="h-3.5 w-3.5" />
+                  <span>2画面分割</span>
+                </button>
+              </div>
             </div>
 
-            <textarea
-              ref={textareaRef}
-              value={activeScript.content}
-              onChange={(e) => handleContentChange(e.target.value)}
-              placeholder="ここにYouTube撮影用の原稿を入力またはペーストしてください。句点（。）や改行ごとに自動でフレーズ分割され、撮影モードでスムーズに追従・表示されます。"
-              className="w-full flex-1 resize-none bg-transparent text-base leading-relaxed text-zinc-100 placeholder-zinc-600 focus:outline-none"
-            />
+            {/* Editor & Preview Display Body */}
+            {editorTab === 'edit' && (
+              <textarea
+                ref={textareaRef}
+                value={activeScript.content}
+                onChange={(e) => handleContentChange(e.target.value)}
+                placeholder="ここにYouTube撮影用の原稿を入力またはペーストしてください。句点（。）や改行ごとに自動でフレーズ分割され、撮影モードでスムーズに追従・表示されます。"
+                className="w-full flex-1 resize-none bg-transparent text-base leading-relaxed text-zinc-100 placeholder-zinc-600 focus:outline-none"
+              />
+            )}
+
+            {editorTab === 'preview' && (
+              <div className="flex-1 overflow-y-auto rounded-xl border border-zinc-800/80 bg-zinc-950/70 p-5">
+                <div className="mb-4 flex items-center justify-between border-b border-zinc-800/60 pb-2 text-xs">
+                  <span className="font-semibold text-zinc-300">
+                    撮影画面プレビュー（装飾反映）
+                  </span>
+                  <span className="text-[11px] text-zinc-500">
+                    ※ 本番撮影時と同じハイライト・演出バッジ表示
+                  </span>
+                </div>
+                <div className="space-y-4 text-base leading-relaxed text-zinc-100">
+                  {previewSegments.length === 0 ? (
+                    <p className="text-sm italic text-zinc-500">
+                      原稿を入力すると、ここに装飾プレビューが表示されます。
+                    </p>
+                  ) : (
+                    previewSegments.map((seg, sIdx) => {
+                      const isNewParagraph =
+                        sIdx > 0 &&
+                        previewSegments[sIdx - 1].paragraphIndex !==
+                          seg.paragraphIndex;
+                      return (
+                        <div
+                          key={seg.id}
+                          className={`rounded-xl px-2 py-1 transition ${
+                            isNewParagraph ? 'mt-6' : ''
+                          }`}
+                        >
+                          <SegmentRichRenderer
+                            text={seg.text}
+                            isCurrent={false}
+                            enableFormatting={true}
+                            enableCharProgress={false}
+                            progressRatio={0}
+                          />
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+
+            {editorTab === 'split' && (
+              <div className="flex flex-1 gap-4 overflow-hidden">
+                <div className="flex flex-1 flex-col">
+                  <span className="mb-1.5 text-xs font-semibold text-zinc-400">
+                    Markdown入力
+                  </span>
+                  <textarea
+                    ref={textareaRef}
+                    value={activeScript.content}
+                    onChange={(e) => handleContentChange(e.target.value)}
+                    placeholder="ここに原稿を入力..."
+                    className="w-full flex-1 resize-none rounded-xl border border-zinc-800/80 bg-zinc-950/40 p-3 text-sm leading-relaxed text-zinc-100 placeholder-zinc-600 focus:border-zinc-700 focus:outline-none"
+                  />
+                </div>
+                <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/70 p-3">
+                  <span className="mb-1.5 text-xs font-semibold text-sky-400">
+                    リアルタイム装飾プレビュー
+                  </span>
+                  <div className="flex-1 overflow-y-auto space-y-3 text-sm leading-relaxed text-zinc-100">
+                    {previewSegments.length === 0 ? (
+                      <p className="text-xs italic text-zinc-500">
+                        原稿を入力すると、ここに装飾プレビューが表示されます。
+                      </p>
+                    ) : (
+                      previewSegments.map((seg, sIdx) => {
+                        const isNewParagraph =
+                          sIdx > 0 &&
+                          previewSegments[sIdx - 1].paragraphIndex !==
+                            seg.paragraphIndex;
+                        return (
+                          <div
+                            key={seg.id}
+                            className={`rounded-lg px-1.5 py-0.5 ${
+                              isNewParagraph ? 'mt-4' : ''
+                            }`}
+                          >
+                            <SegmentRichRenderer
+                              text={seg.text}
+                              isCurrent={false}
+                              enableFormatting={true}
+                              enableCharProgress={false}
+                              progressRatio={0}
+                            />
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-800/80 pt-3 text-xs text-zinc-400">
               <div className="flex items-center gap-4">

@@ -64,6 +64,26 @@ describe('Vol.3 Step 1: Stage directions & highlights', () => {
     ]);
   });
 
+  it('correctly handles user highlight sample lines', () => {
+    const raw = `**重要キーワード**：イエローハイライト（重要語・強調）
+==水色キーワード==：スカイブルーハイライト（補足・専門用語・トーン変化）
+!!警告キーワード!!：ローズレッドハイライト（注意・NGワード・感情指示）`;
+    const segs = parseScriptToSegments(raw);
+    expect(segs).toHaveLength(3);
+
+    const seg0Tokens = parseSegmentInlineTokens(segs[0].text).tokens;
+    expect(seg0Tokens[0].type).toBe('highlight-yellow');
+    expect(seg0Tokens[0].content).toBe('重要キーワード');
+
+    const seg1Tokens = parseSegmentInlineTokens(segs[1].text).tokens;
+    expect(seg1Tokens[0].type).toBe('highlight-sky');
+    expect(seg1Tokens[0].content).toBe('水色キーワード');
+
+    const seg2Tokens = parseSegmentInlineTokens(segs[2].text).tokens;
+    expect(seg2Tokens[0].type).toBe('highlight-rose');
+    expect(seg2Tokens[0].content).toBe('警告キーワード');
+  });
+
   it('voice tracking skips over cue-only and heading lines', () => {
     const segs = parseScriptToSegments(
       '最初の挨拶をします。\n[笑顔で]\n# 本題\n今回のテーマはテレプロンプターです。'
