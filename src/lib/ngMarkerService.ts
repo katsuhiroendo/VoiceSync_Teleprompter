@@ -121,7 +121,11 @@ export function resolveRetakeSegmentIndex(
     case 'prev-heading-or-section': {
       // Search backward from safeCurrent - 1 for a heading segment
       for (let i = safeCurrent - 1; i >= 0; i--) {
-        if (isHeadingSegment(segments[i].text)) {
+        // Vol.3: ト書きのみ行（【1秒ポーズ】等）は見出しとして扱わない
+        if (
+          segments[i].isHeading ||
+          (!segments[i].isCueOnly && isHeadingSegment(segments[i].text))
+        ) {
           return i;
         }
       }

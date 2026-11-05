@@ -9,12 +9,17 @@ import {
   RecordingSessionMeta,
   NGMarkerItem,
   NGMarkerType,
+  DEFAULT_CUSTOM_KEY_BINDINGS,
 } from '@/types/prompter';
 import {
   parseScriptToSegments,
   normalizeTextForMatching,
   computeSegmentDisplayHierarchy,
+  extractScriptChapters,
+  estimateRemainingReadingTime,
 } from '@/lib/scriptParser';
+import { SegmentRichRenderer } from '@/components/SegmentRichRenderer';
+import { FloatingPrompterPortal } from '@/components/FloatingPrompterPortal';
 import { stripJapaneseFillers } from '@/lib/japaneseNormalizer';
 import {
   SpeechRecognitionController,
@@ -91,6 +96,8 @@ import {
   Trash2,
   Flag,
   Activity,
+  List,
+  PictureInPicture2,
 } from 'lucide-react';
 
 interface TeleprompterStageProps {
@@ -219,6 +226,23 @@ export function TeleprompterStage({
   const [customMarkerNote, setCustomMarkerNote] = useState<string>('');
   // Phase 2: Audio Quality Check Modal state
   const [isAudioTestOpen, setIsAudioTestOpen] = useState<boolean>(false);
+  // Vol.3: Chapter List Sidebar & Document Picture-in-Picture Floating Window state
+  const [isChapterMenuOpen, setIsChapterMenuOpen] = useState<boolean>(false);
+  const [pipContainerEl, setPipContainerEl] = useState<HTMLElement | null>(
+    null
+  );
+  const floatingPipWindowRef = useRef<Window | null>(null);
+
+  const chapters = useMemo(() => extractScriptChapters(segments), [segments]);
+  const readingEstimate = useMemo(
+    () =>
+      estimateRemainingReadingTime(
+        segments,
+        activeSegmentIndex,
+        script.language
+      ),
+    [segments, activeSegmentIndex, script.language]
+  );
 
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -1514,10 +1538,108 @@ export function TeleprompterStage({
     }
   }, []);
 
-  // Keyboard shortcuts during Teleprompter Stage
+  // Vol.3 (Step 4): Close Floating Always-on-Top Mini Prompter Window
+  const handleCloseFloatingPip = useCallback(() => {
+    setPipContainerEl(null);
+    if (floatingPipWindowRef.current && !floatingPipWindowRef.current.closed) {
+      floatingPipWindowRef.current.close();
+    }
+    floatingPipWindowRef.current = null;
+  }, []);
+
+  // Vol.3 (Step 4): Open / Toggle Always-on-Top Floating Mini Prompter (Document Picture-in-Picture with popup fallback)
+  const handleToggleFloatingPip = useCallback(async () => {
+    if (floatingPipWindowRef.current && !floatingPipWindowRef.current.closed) {
+      handleCloseFloatingPip();
+      return;
+    }
+
+    try {
+      let pipWin: Window | null = null;
+      const winWithDocPip = window as Window & {
+        documentPictureInPicture?: {
+          requestWindow: (options?: {
+            width?: number;
+            height?: number;
+          }) => Promise<Window>;
+        };
+      };
+
+      if (winWithDocPip.documentPictureInPicture?.requestWindow) {
+        pipWin = await winWithDocPip.documentPictureInPicture.requestWindow({
+          width: 780,
+          height: 270,
+        });
+      } else {
+        pipWin = window.open(
+          '',
+          'VoiceSyncFloatingPrompter',
+          'width=780,height=270,menubar=no,toolbar=no,location=no,status=no'
+        );
+      }
+
+      if (!pipWin) {
+        setCameraError(
+          'フローティング小窓を開けませんでした。ポップアップブロックを許可してください。'
+        );
+        return;
+      }
+
+      pipWin.document.title = 'VoiceSync 最前面プロンプター';
+      pipWin.document.documentElement.className = 'dark';
+      pipWin.document.body.style.margin = '0';
+      pipWin.document.body.style.backgroundColor = '#050507';
+      pipWin.document.body.innerHTML = '';
+
+      // Copy all stylesheets from main document so Tailwind classes render identically in Document PiP
+      Array.from(
+        document.querySelectorAll('link[rel="stylesheet"], style')
+      ).forEach((node) => {
+        pipWin!.document.head.appendChild(node.cloneNode(true));
+      });
+
+      const rootDiv = pipWin.document.createElement('div');
+      rootDiv.id = 'voicesync-floating-pip-root';
+      pipWin.document.body.appendChild(rootDiv);
+
+      pipWin.addEventListener('pagehide', () => {
+        setPipContainerEl(null);
+        floatingPipWindowRef.current = null;
+      });
+
+      floatingPipWindowRef.current = pipWin;
+      setPipContainerEl(rootDiv);
+    } catch {
+      setCameraError(
+        'フローティング小窓（Document Picture-in-Picture）の起動に失敗しました。'
+      );
+    }
+  }, [handleCloseFloatingPip]);
+
   useEffect(() => {
+    return () => {
+      if (
+        floatingPipWindowRef.current &&
+        !floatingPipWindowRef.current.closed
+      ) {
+        floatingPipWindowRef.current.close();
+      }
+    };
+  }, []);
+
+  // Keyboard shortcuts during Teleprompter Stage (supports both built-in shortcuts & custom remote/key bindings)
+  useEffect(() => {
+    const customKeys =
+      settings.customKeyBindings || DEFAULT_CUSTOM_KEY_BINDINGS;
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      const activeTag = document.activeElement?.tagName;
+      // IME safety check: never trigger shortcuts during Japanese IME composition (including Safari keyCode 229)
+      if (e.isComposing || e.keyCode === 229) {
+        return;
+      }
+
+      const targetDoc = (e.target as HTMLElement)?.ownerDocument || document;
+      const activeTag = targetDoc.activeElement?.tagName;
       if (
         document.querySelector('dialog[open]') ||
         isAudioTestOpen ||
@@ -1538,67 +1660,91 @@ export function TeleprompterStage({
         return;
       }
 
-      if (e.code === 'Space') {
+      const code = e.code;
+
+      if (code === 'Space' || code === customKeys.togglePlay) {
         e.preventDefault();
         setIsPlaying((prev) => !prev);
-      } else if (e.code === 'KeyM' || e.code === 'KeyN') {
-        // NG Marker shortcut (M or N)
+      } else if (
+        code === 'KeyM' ||
+        code === 'KeyN' ||
+        code === customKeys.recordNgMarker
+      ) {
+        // NG Marker shortcut (M / N or custom remote button)
         e.preventDefault();
         handleRecordNGMarker('ng');
       } else if (
-        e.code === 'Digit1' ||
-        e.code === 'Numpad1' ||
-        e.code === 'KeyR'
+        code === 'Digit1' ||
+        code === 'Numpad1' ||
+        code === 'KeyR' ||
+        code === customKeys.retakeCurrentPhrase
       ) {
         // 1 / R: Restart from beginning of current phrase
         e.preventDefault();
         handleRetakeJump('current-phrase');
       } else if (
-        e.code === 'Digit2' ||
-        e.code === 'Numpad2' ||
-        ((e.code === 'ArrowUp' || e.code === 'ArrowLeft') && !e.shiftKey)
+        code === 'Digit2' ||
+        code === 'Numpad2' ||
+        code === customKeys.retakePrevPhrase ||
+        ((code === 'ArrowUp' || code === 'ArrowLeft') && !e.shiftKey)
       ) {
         // 2 / Up / Left: Go back 1 phrase
         e.preventDefault();
         handleRetakeJump('prev-phrase');
       } else if (
-        e.code === 'Digit3' ||
-        e.code === 'Numpad3' ||
-        e.code === 'KeyP' ||
-        (e.code === 'ArrowUp' && e.shiftKey)
+        code === 'Digit3' ||
+        code === 'Numpad3' ||
+        code === 'KeyP' ||
+        code === customKeys.retakeParagraphStart ||
+        (code === 'ArrowUp' && e.shiftKey)
       ) {
         // 3 / P / Shift+Up: Go back to start of current paragraph
         e.preventDefault();
         handleRetakeJump('current-paragraph-start');
       } else if (
-        e.code === 'Digit4' ||
-        e.code === 'Numpad4' ||
-        e.code === 'KeyH' ||
-        (e.code === 'ArrowLeft' && e.shiftKey)
+        code === 'Digit4' ||
+        code === 'Numpad4' ||
+        code === 'KeyH' ||
+        code === customKeys.retakePrevHeading ||
+        code === customKeys.prevChapter ||
+        (code === 'ArrowLeft' && e.shiftKey)
       ) {
-        // 4 / H / Shift+Left: Go back to previous heading or section
+        // 4 / H / Shift+Left / PageUp: Go back to previous heading or section
         e.preventDefault();
         handleRetakeJump('prev-heading-or-section');
       } else if (
-        (e.code === 'ArrowDown' || e.code === 'ArrowRight') &&
-        e.shiftKey
+        code === customKeys.nextChapter ||
+        ((code === 'ArrowDown' || code === 'ArrowRight') && e.shiftKey)
       ) {
-        // Shift+Down / Shift+Right: Jump to next paragraph
+        // Shift+Down / Shift+Right / PageDown: Jump to next paragraph/section
         e.preventDefault();
         handleJumpParagraph('next');
-      } else if (e.code === 'ArrowDown' || e.code === 'ArrowRight') {
+      } else if (
+        code === 'ArrowDown' ||
+        code === 'ArrowRight' ||
+        code === customKeys.nextPhrase
+      ) {
         // Down / Right: Advance 1 phrase
         e.preventDefault();
         const nextIdx = Math.min(segments.length - 1, activeSegmentIndex + 1);
         syncActiveSegmentPosition(nextIdx);
-      } else if (e.code === 'Home') {
+      } else if (code === 'Home') {
         e.preventDefault();
         handleResetToTop();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    const pipWin = floatingPipWindowRef.current;
+    if (pipWin && !pipWin.closed) {
+      pipWin.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      if (pipWin && !pipWin.closed) {
+        pipWin.removeEventListener('keydown', handleKeyDown);
+      }
+    };
   }, [
     activeSegmentIndex,
     countdownStep,
@@ -1608,7 +1754,9 @@ export function TeleprompterStage({
     handleResetToTop,
     handleRetakeJump,
     isAudioTestOpen,
+    pipContainerEl,
     segments.length,
+    settings.customKeyBindings,
     syncActiveSegmentPosition,
   ]);
 
@@ -1658,8 +1806,108 @@ export function TeleprompterStage({
               {script.title}
             </h1>
             <p className="text-[10px] text-zinc-400">
-              フレーズ {activeSegmentIndex + 1} / {Math.max(1, segments.length)}
+              フレーズ {activeSegmentIndex + 1} / {Math.max(1, segments.length)}{' '}
+              ・ 進捗 {readingEstimate.progressPercent}% (
+              {readingEstimate.formattedRemaining})
             </p>
+          </div>
+
+          {/* Vol.3 (Step 2): Chapter Index / Section Jump Button */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsChapterMenuOpen((prev) => !prev)}
+              className={`flex min-h-[42px] items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
+                isChapterMenuOpen
+                  ? 'border-sky-500/60 bg-sky-500/20 text-sky-300'
+                  : 'border-zinc-800 bg-zinc-900/90 text-zinc-300 hover:bg-zinc-800 hover:text-white'
+              }`}
+              title="チャプター目次・段落ジャンプ一覧を開く"
+            >
+              <List className="h-4 w-4 text-sky-400" />
+              <span>目次</span>
+              {chapters.length > 0 && (
+                <span className="rounded-full bg-sky-500/25 px-1.5 py-0.2 text-[10px] font-bold text-sky-300">
+                  {chapters.length}
+                </span>
+              )}
+            </button>
+
+            {isChapterMenuOpen && (
+              <div className="absolute top-12 left-0 z-40 w-80 rounded-2xl border border-white/15 bg-zinc-950/95 p-3.5 text-xs text-zinc-100 shadow-2xl backdrop-blur-xl">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                  <span className="flex items-center gap-1.5 font-bold text-sky-300">
+                    <List className="h-3.5 w-3.5" />
+                    <span>チャプター・セクション目次</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsChapterMenuOpen(false)}
+                    className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {/* Overall progress bar inside Chapter Menu */}
+                <div className="mt-2.5 rounded-xl bg-zinc-900/90 p-2.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300">
+                      全体進捗: <strong>{readingEstimate.progressPercent}%</strong>
+                    </span>
+                    <span className="font-mono text-sky-300">
+                      {readingEstimate.formattedRemaining}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                    <div
+                      style={{ width: `${readingEstimate.progressPercent}%` }}
+                      className="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400 transition-all duration-200"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-2.5 max-h-64 space-y-1 overflow-y-auto pr-1">
+                  {chapters.length > 0 ? (
+                    chapters.map((chap, cIdx) => {
+                      const nextChapSegIdx =
+                        chapters[cIdx + 1]?.segmentIndex ?? segments.length;
+                      const isCurrentChapter =
+                        activeSegmentIndex >= chap.segmentIndex &&
+                        activeSegmentIndex < nextChapSegIdx;
+
+                      return (
+                        <button
+                          key={chap.id}
+                          type="button"
+                          onClick={() => {
+                            syncActiveSegmentPosition(chap.segmentIndex);
+                            setIsChapterMenuOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left transition ${
+                            isCurrentChapter
+                              ? 'border-sky-500/50 bg-sky-500/15 text-white'
+                              : 'border-transparent bg-zinc-900/60 text-zinc-300 hover:border-zinc-800 hover:bg-zinc-900'
+                          }`}
+                        >
+                          <span className="truncate font-medium">
+                            {chap.title}
+                          </span>
+                          <span className="shrink-0 font-mono text-[10px] text-zinc-400">
+                            #{chap.segmentIndex + 1}
+                          </span>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-3 text-[11px] text-zinc-400">
+                      原稿内に <code className="text-sky-300"># 見出し</code>{' '}
+                      を追加すると、ここにチャプター目次が自動生成されます。
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1739,6 +1987,21 @@ export function TeleprompterStage({
 
         {/* Right Quick Toggles */}
         <div className="flex items-center gap-2">
+          {/* Vol.3 (Step 4): Always-on-Top Floating Mini Prompter (Document Picture-in-Picture) */}
+          <button
+            type="button"
+            onClick={handleToggleFloatingPip}
+            className={`flex min-h-[42px] items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition ${
+              pipContainerEl
+                ? 'border-violet-500/60 bg-violet-500/20 text-violet-200'
+                : 'border-zinc-800 bg-zinc-900/90 text-zinc-300 hover:bg-zinc-800 hover:text-white'
+            }`}
+            title="他アプリ（スライド・ブラウザ・OBS等）の最前面に常時浮くミニプロンプター小窓を開く"
+          >
+            <PictureInPicture2 className="h-4 w-4 text-violet-400" />
+            <span>{pipContainerEl ? '小窓ON' : '最前面小窓'}</span>
+          </button>
+
           {/* Phase 2 (Section 4.2 & 4.6): Pre-recording Audio Quality Check Button */}
           <button
             type="button"
@@ -2467,7 +2730,38 @@ export function TeleprompterStage({
                         : 'hover:opacity-75'
                   }`}
                 >
-                  {seg.text}
+                  <SegmentRichRenderer
+                    text={seg.text}
+                    isCurrent={isCurrent}
+                    enableFormatting={
+                      settings.enableStageDirectionsAndHighlights ?? true
+                    }
+                    enableCharProgress={
+                      settings.charLevelProgressHighlight ?? true
+                    }
+                    progressRatio={
+                      isCurrent && lastMatchResult
+                        ? lastMatchResult.progressRatio
+                        : 0
+                    }
+                  />
+
+                  {isCurrent &&
+                    (settings.charLevelProgressHighlight ?? true) &&
+                    lastMatchResult &&
+                    lastMatchResult.progressRatio > 0 && (
+                      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-zinc-800/80">
+                        <div
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              Math.round(lastMatchResult.progressRatio * 100)
+                            )}%`,
+                          }}
+                          className="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400 transition-all duration-100"
+                        />
+                      </div>
+                    )}
                 </div>
               );
             })}
@@ -2913,6 +3207,36 @@ export function TeleprompterStage({
         }
         language={script.language}
         isVideoRecordingActive={cameraStatus === 'recording'}
+      />
+
+      {/* Vol.3 (Step 4): Document Picture-in-Picture Floating Mini Prompter Portal */}
+      <FloatingPrompterPortal
+        containerEl={pipContainerEl}
+        segments={segments}
+        activeSegmentIndex={activeSegmentIndex}
+        activeProgressRatio={lastMatchResult?.progressRatio ?? 0}
+        isPlaying={isPlaying}
+        isRecording={cameraStatus === 'recording'}
+        recordingTimerText={formatDurationTimer(recordingSeconds)}
+        remainingTimeText={readingEstimate.formattedRemaining}
+        progressPercent={readingEstimate.progressPercent}
+        ngCount={sessionMarkers.length}
+        settings={settings}
+        onTogglePlay={() => setIsPlaying((prev) => !prev)}
+        onRecordNG={() => handleRecordNGMarker('ng')}
+        onRetakeCurrent={() => handleRetakeJump('current-phrase')}
+        onRetakePrev={() => handleRetakeJump('prev-phrase')}
+        onAdvanceNext={() => {
+          const nextIdx = Math.min(segments.length - 1, activeSegmentIndex + 1);
+          syncActiveSegmentPosition(nextIdx);
+        }}
+        onSelectSegment={(idx) => syncActiveSegmentPosition(idx)}
+        onChangeFontSize={(delta) =>
+          onUpdateSettings({
+            fontSize: Math.max(16, Math.min(100, settings.fontSize + delta)),
+          })
+        }
+        onClosePip={handleCloseFloatingPip}
       />
     </div>
   );

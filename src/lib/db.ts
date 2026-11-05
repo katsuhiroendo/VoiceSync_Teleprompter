@@ -152,7 +152,15 @@ export async function loadPrompterSettings(): Promise<PrompterSettings> {
       const req = store.get(SETTINGS_KEY);
       req.onsuccess = () => {
         if (req.result) {
-          resolve({ ...DEFAULT_PROMPTER_SETTINGS, ...req.result });
+          resolve({
+            ...DEFAULT_PROMPTER_SETTINGS,
+            ...req.result,
+            // Vol.3: nested merge so newly added shortcut actions always have defaults
+            customKeyBindings: {
+              ...DEFAULT_PROMPTER_SETTINGS.customKeyBindings,
+              ...(req.result.customKeyBindings || {}),
+            },
+          });
         } else {
           resolve({ ...DEFAULT_PROMPTER_SETTINGS });
         }

@@ -5,11 +5,64 @@ export interface ScriptSegment {
   index: number;
   paragraphIndex: number;
   text: string;
+  spokenText?: string;        // Vol.3: ト書き・見出し記号を除いた実際の発話対象テキスト
   normalizedText: string;
   readingText?: string;       // Phase 5: ひらがな読み・漢数字/英単語統一テキスト
+  isHeading?: boolean;        // Vol.3: チャプター見出し行かどうか (# 見出し 等)
+  headingTitle?: string;      // Vol.3: チャプター名
+  isCueOnly?: boolean;        // Vol.3: ト書きのみの行かどうか ([ポーズ] 等)
   startCharOffset: number;
   endCharOffset: number;
 }
+
+export type InlineTokenType =
+  | 'text'
+  | 'cue'
+  | 'heading'
+  | 'highlight-yellow'
+  | 'highlight-sky'
+  | 'highlight-rose';
+
+export interface SegmentInlineToken {
+  type: InlineTokenType;
+  raw: string;
+  content: string;
+  spokenStartChar: number;    // 発話文字インデックス開始位置 (cueの場合は -1)
+  spokenEndChar: number;      // 発話文字インデックス終了位置
+}
+
+export interface ScriptChapterItem {
+  id: string;
+  title: string;
+  segmentIndex: number;
+  paragraphIndex: number;
+  startCharOffset: number;
+}
+
+export type ShortcutActionId =
+  | 'togglePlay'
+  | 'recordNgMarker'
+  | 'retakeCurrentPhrase'
+  | 'retakePrevPhrase'
+  | 'retakeParagraphStart'
+  | 'retakePrevHeading'
+  | 'nextPhrase'
+  | 'nextChapter'
+  | 'prevChapter';
+
+export type CustomKeyBindingMap = Record<ShortcutActionId, string>;
+
+export const DEFAULT_CUSTOM_KEY_BINDINGS: CustomKeyBindingMap = {
+  togglePlay: 'Space',
+  recordNgMarker: 'KeyM',
+  retakeCurrentPhrase: 'Digit1',
+  retakePrevPhrase: 'Digit2',
+  retakeParagraphStart: 'Digit3',
+  retakePrevHeading: 'Digit4',
+  nextPhrase: 'ArrowDown',
+  nextChapter: 'PageDown',
+  prevChapter: 'PageUp',
+};
 
 export interface ScriptItem {
   id: string;
@@ -137,6 +190,11 @@ export interface PrompterSettings {
   countdownBeepEnabled: boolean;                // カウントダウン音のON/OFF (標準OFF)
   recStartBeepEnabled: boolean;                 // REC開始通知音のON/OFF (標準OFF)
   postRecordSilentWaitSec: number;              // 録画開始後の無音待機時間 (0〜3秒, 標準0)
+
+  // Vol.3: ト書き・強調・文字進捗・カスタムキー割り当て
+  enableStageDirectionsAndHighlights: boolean;  // [ト書き]バッジ＆照合除外・**太字色強調**を有効にするか
+  charLevelProgressHighlight: boolean;          // 現在フレーズ内の読んだ文字までのリアルタイム色変化＆進捗バー
+  customKeyBindings: CustomKeyBindingMap;       // Bluetoothリモコン・左手デバイス用カスタムキー割り当て
 }
 
 export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
@@ -184,4 +242,8 @@ export const DEFAULT_PROMPTER_SETTINGS: PrompterSettings = {
   countdownBeepEnabled: false,
   recStartBeepEnabled: false,
   postRecordSilentWaitSec: 0,
+
+  enableStageDirectionsAndHighlights: true,
+  charLevelProgressHighlight: true,
+  customKeyBindings: DEFAULT_CUSTOM_KEY_BINDINGS,
 };

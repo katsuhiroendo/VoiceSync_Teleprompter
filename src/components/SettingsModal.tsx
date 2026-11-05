@@ -4,6 +4,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   PrompterSettings,
   RecordingSessionMeta,
+  ShortcutActionId,
+  DEFAULT_CUSTOM_KEY_BINDINGS,
 } from '@/types/prompter';
 import {
   CameraDeviceOption,
@@ -38,6 +40,7 @@ import {
   HardDrive,
   Download,
   Trash2,
+  Keyboard,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -71,6 +74,37 @@ export function SettingsModal({
   const [isExportingSessionId, setIsExportingSessionId] = useState<
     string | null
   >(null);
+  // Vol.3 (Step 5): Active shortcut action waiting for key press capture
+  const [capturingActionId, setCapturingActionId] =
+    useState<ShortcutActionId | null>(null);
+
+  useEffect(() => {
+    if (!capturingActionId) return;
+    const handleCaptureKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.code === 'Escape') {
+        setCapturingActionId(null);
+        return;
+      }
+
+      const currentMap =
+        settings.customKeyBindings || DEFAULT_CUSTOM_KEY_BINDINGS;
+      onUpdateSettings({
+        customKeyBindings: {
+          ...currentMap,
+          [capturingActionId]: e.code,
+        },
+      });
+      setCapturingActionId(null);
+    };
+
+    window.addEventListener('keydown', handleCaptureKeyDown, true);
+    return () =>
+      window.removeEventListener('keydown', handleCaptureKeyDown, true);
+  }, [capturingActionId, onUpdateSettings, settings.customKeyBindings]);
 
   const refreshStorageAndSessions = async () => {
     try {
@@ -729,6 +763,49 @@ export function SettingsModal({
                       className="h-4 w-4 accent-sky-500"
                     />
                   </label>
+
+                  {/* Vol.3 (Step 1 & 3): Stage directions, highlights & real-time char progress */}
+                  <label className="flex items-center justify-between border-t border-zinc-800/80 pt-2.5 text-xs text-zinc-300">
+                    <div>
+                      <span className="block font-medium text-zinc-200">
+                        [ト書き] バッジ＆音声照合除外・**太字色強調**
+                      </span>
+                      <span className="text-[10px] text-zinc-400">
+                        [笑顔で] 等をバッジ化し、声に出さなくても自動スキップ
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={settings.enableStageDirectionsAndHighlights ?? true}
+                      onChange={(e) =>
+                        onUpdateSettings({
+                          enableStageDirectionsAndHighlights: e.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 accent-sky-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between pt-1 text-xs text-zinc-300">
+                    <div>
+                      <span className="block font-medium text-zinc-200">
+                        フレーズ内の読んだ文字までのリアルタイム色変化
+                      </span>
+                      <span className="text-[10px] text-zinc-400">
+                        発話進捗に合わせて文字色と下線ゲージが進行（カラオケ風）
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={settings.charLevelProgressHighlight ?? true}
+                      onChange={(e) =>
+                        onUpdateSettings({
+                          charLevelProgressHighlight: e.target.checked,
+                        })
+                      }
+                      className="h-4 w-4 accent-sky-500"
+                    />
+                  </label>
                 </div>
               </div>
             </div>
@@ -1293,6 +1370,122 @@ export function SettingsModal({
                   ：USB接続または同一Apple IDで近づけると、『📱 iPhone カメラ』としてそのまま選択できます。
                 </li>
               </ul>
+            </div>
+
+            {/* Vol.3 (Step 5): Bluetooth Remote / Stream Deck / Custom Key Bindings */}
+            <div className="space-y-3 rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
+                  <Keyboard className="h-4 w-4 text-sky-400" />
+                  <span>
+                    ショートカットキー・Bluetoothリモコン割り当てカスタマイズ
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateSettings({
+                      customKeyBindings: DEFAULT_CUSTOM_KEY_BINDINGS,
+                    })
+                  }
+                  className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-[10px] font-medium text-zinc-300 transition hover:bg-zinc-800 hover:text-white"
+                >
+                  標準キーに戻す
+                </button>
+              </div>
+
+              <p className="text-[11px] text-zinc-400">
+                市販のBluetoothページめくりリモコン、プレゼンター、左手デバイス（Stream Deck等）、テンキーの任意のボタンを割り当てられます。右側のボタンを押してから、登録したいキーを押してください。
+              </p>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {(
+                  [
+                    {
+                      id: 'togglePlay',
+                      label: '再生 / 一時停止',
+                      fixedHint: '標準: Space',
+                    },
+                    {
+                      id: 'recordNgMarker',
+                      label: 'NGマーカー記録',
+                      fixedHint: '標準: M / N',
+                    },
+                    {
+                      id: 'retakeCurrentPhrase',
+                      label: '現在フレーズから再開',
+                      fixedHint: '標準: 1 / R',
+                    },
+                    {
+                      id: 'retakePrevPhrase',
+                      label: '1フレーズ戻る',
+                      fixedHint: '標準: 2 / ↑ / ←',
+                    },
+                    {
+                      id: 'retakeParagraphStart',
+                      label: '現在段落の先頭へ戻る',
+                      fixedHint: '標準: 3 / P / Shift+↑',
+                    },
+                    {
+                      id: 'retakePrevHeading',
+                      label: '前の見出し・章へ戻る',
+                      fixedHint: '標準: 4 / H / Shift+←',
+                    },
+                    {
+                      id: 'nextPhrase',
+                      label: '1フレーズ先へ進む',
+                      fixedHint: '標準: ↓ / →',
+                    },
+                    {
+                      id: 'prevChapter',
+                      label: '前の章・セクションへ移動',
+                      fixedHint: '標準: PageUp',
+                    },
+                    {
+                      id: 'nextChapter',
+                      label: '次の段落・セクションへ移動',
+                      fixedHint: '標準: PageDown / Shift+↓',
+                    },
+                  ] as const
+                ).map((item) => {
+                  const currentMap =
+                    settings.customKeyBindings || DEFAULT_CUSTOM_KEY_BINDINGS;
+                  const assignedCode = currentMap[item.id];
+                  const isCapturing = capturingActionId === item.id;
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <span className="block truncate font-semibold text-zinc-200">
+                          {item.label}
+                        </span>
+                        <span className="text-[10px] text-zinc-500">
+                          {item.fixedHint}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCapturingActionId(isCapturing ? null : item.id)
+                        }
+                        className={`shrink-0 rounded-lg border px-2.5 py-1.5 font-mono text-[11px] font-bold transition ${
+                          isCapturing
+                            ? 'animate-pulse border-amber-400 bg-amber-500/25 text-amber-200'
+                            : 'border-sky-500/40 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20'
+                        }`}
+                      >
+                        {isCapturing
+                          ? 'キー入力待 (Esc解除)...'
+                          : assignedCode}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             {/* Phase 6 (8.6 & 8.7): Saved Recording Sessions & Browser Storage Management */}

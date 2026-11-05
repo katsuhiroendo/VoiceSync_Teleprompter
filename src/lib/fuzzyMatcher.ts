@@ -468,27 +468,50 @@ export function findBestMatchingSegment(
   const searchStart = allowBacktrack ? Math.max(0, safeCurrentIdx - 5) : safeCurrentIdx;
   const searchEnd = Math.min(segments.length - 1, safeCurrentIdx + 15);
 
+  // Vol.3: 見出し行(isHeading)やト書きのみ行(isCueOnly)は声に出して読まない場合が多いため、
+  // 2つのインデックス間の「発話対象セグメント距離 (spokenDelta)」を計算し、見出し・ト書き行を挟んでも直後のセリフ(spokenDelta === 1)として扱う
+  const countNonSpokenBetween = (fromIdx: number, toIdx: number): number => {
+    if (toIdx <= fromIdx) return 0;
+    let nonSpoken = 0;
+    // If current segment itself is a heading or cue-only, count it so the immediately following spoken line has spokenDelta = 1
+    if (segments[fromIdx]?.isHeading || segments[fromIdx]?.isCueOnly) {
+      nonSpoken++;
+    }
+    for (let k = fromIdx + 1; k < toIdx; k++) {
+      if (segments[k]?.isHeading || segments[k]?.isCueOnly) {
+        nonSpoken++;
+      }
+    }
+    return nonSpoken;
+  };
+
   for (let idx = searchStart; idx <= searchEnd; idx++) {
     if (idx === safeCurrentIdx) continue;
 
     const candidate = segments[idx];
+    if (candidate.isCueOnly || !candidate.normalizedText) continue;
+
     const rawScore = scoreSegmentComposite(candidate);
-    const delta = idx - safeCurrentIdx;
+    const rawDelta = idx - safeCurrentIdx;
+    const effectiveDelta =
+      rawDelta > 0
+        ? Math.max(1, rawDelta - countNonSpokenBetween(safeCurrentIdx, idx))
+        : rawDelta;
 
     // 距離に応じた近傍優先重み付け（4.3.3 & 7.4 現在位置の周辺・前後連続性を優先）
     let proximityMultiplier = 1.0;
-    if (delta === 1) {
-      // 直後のフレーズは最も自然な遷移先なので優遇
+    if (effectiveDelta === 1) {
+      // 直後のフレーズ（または見出し・ト書き直後のフレーズ）は最も自然な遷移先なので優遇
       proximityMultiplier = isNearEndOfCurrent ? 1.12 : 1.05;
-    } else if (delta === 2) {
+    } else if (effectiveDelta === 2) {
       proximityMultiplier = 0.96;
-    } else if (delta > 2 && delta <= 5) {
+    } else if (effectiveDelta > 2 && effectiveDelta <= 5) {
       // 小幅な飛ばし読み
       proximityMultiplier = 0.86;
-    } else if (delta > 5) {
+    } else if (effectiveDelta > 5) {
       // 次の段落へのジャンプなど大きな前方移動
       proximityMultiplier = 0.78;
-    } else if (delta < 0) {
+    } else if (effectiveDelta < 0) {
       // 前の文章の読み直し（揺らぎによる逆戻りを防ぐためペナルティを課す）
       proximityMultiplier = 0.76;
     }
@@ -502,7 +525,11 @@ export function findBestMatchingSegment(
     }
   }
 
-  const delta = bestIdx - safeCurrentIdx;
+  const rawDelta = bestIdx - safeCurrentIdx;
+  const delta =
+    rawDelta > 0
+      ? Math.max(1, rawDelta - countNonSpokenBetween(safeCurrentIdx, bestIdx))
+      : rawDelta;
 
   // 1. 同じセグメントに留まる場合
   if (delta === 0) {

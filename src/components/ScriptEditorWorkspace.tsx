@@ -2,6 +2,7 @@
 
 import React, { useRef, useState } from 'react';
 import { ScriptItem, LanguageCode } from '@/types/prompter';
+import { stripStageDirectionsAndFormatting } from '@/lib/scriptParser';
 import {
   Plus,
   Search,
@@ -16,6 +17,9 @@ import {
   Globe,
   Cloud,
   Activity,
+  Sparkles,
+  Hash,
+  Highlighter,
 } from 'lucide-react';
 
 interface ScriptEditorWorkspaceProps {
@@ -50,6 +54,39 @@ export function ScriptEditorWorkspace({
   const [searchQuery, setSearchQuery] = useState('');
   const [saveIndicator, setSaveIndicator] = useState<'saved' | 'saving'>('saved');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Insert or wrap text at current cursor selection in the editor textarea
+  const handleInsertMarkup = (
+    prefix: string,
+    suffix: string = '',
+    placeholder: string = ''
+  ) => {
+    const el = textareaRef.current;
+    const current = activeScript.content;
+    if (!el) {
+      handleContentChange(`${current}\n${prefix}${placeholder}${suffix}`);
+      return;
+    }
+
+    const start = el.selectionStart ?? current.length;
+    const end = el.selectionEnd ?? current.length;
+    const selected = current.slice(start, end);
+    const inner = selected || placeholder;
+    const nextContent =
+      current.slice(0, start) +
+      prefix +
+      inner +
+      suffix +
+      current.slice(end);
+
+    handleContentChange(nextContent);
+    setTimeout(() => {
+      el.focus();
+      const nextCursor = start + prefix.length + inner.length + suffix.length;
+      el.setSelectionRange(nextCursor, nextCursor);
+    }, 0);
+  };
 
   const filteredScripts = scripts.filter((item) => {
     if (!searchQuery.trim()) return true;
@@ -116,16 +153,18 @@ export function ScriptEditorWorkspace({
     URL.revokeObjectURL(url);
   };
 
-  const charCount = activeScript.content.replace(/\s+/g, '').length;
-  // 日本語平均 320文字/分、英語平均 140ワード/分 で想定読み上げ時間を算出
+  const spokenOnlyText = stripStageDirectionsAndFormatting(
+    activeScript.content
+  );
+  const charCount = spokenOnlyText.replace(/\s+/g, '').length;
+  // 日本語平均 320文字/分、英語平均 140ワード/分 で想定読み上げ時間を算出（ト書きは除外）
   const estimatedMinutes =
     activeScript.language === 'ja-JP'
       ? Math.max(0.5, Math.round((charCount / 320) * 10) / 10)
       : Math.max(
           0.5,
           Math.round(
-            (activeScript.content.trim().split(/\s+/).filter(Boolean).length /
-              140) *
+            (spokenOnlyText.trim().split(/\s+/).filter(Boolean).length / 140) *
               10
           ) / 10
         );
@@ -145,8 +184,8 @@ export function ScriptEditorWorkspace({
                 <h1 className="text-sm font-bold tracking-tight text-white">
                   VoiceSync
                 </h1>
-                <span className="rounded-md border border-emerald-500/40 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300">
-                  Vol.2
+                <span className="rounded-md border border-sky-500/40 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-bold text-sky-300">
+                  Vol.3
                 </span>
               </div>
               <p className="text-[11px] text-zinc-400">
@@ -354,7 +393,79 @@ export function ScriptEditorWorkspace({
         {/* Textarea Editor */}
         <div className="flex flex-1 flex-col overflow-hidden p-6">
           <div className="mx-auto flex h-full w-full max-w-4xl flex-col rounded-2xl border border-zinc-800/80 bg-zinc-900/30 p-5 shadow-inner">
+            {/* Vol.3: Quick Insert Toolbar for Chapters, Highlights & Non-spoken Stage Directions */}
+            <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-zinc-800/80 pb-3 text-[11px]">
+              <span className="mr-1 flex items-center gap-1 font-semibold text-zinc-400">
+                <Sparkles className="h-3.5 w-3.5 text-sky-400" />
+                <span>挿入ツール:</span>
+              </span>
+
+              <button
+                type="button"
+                onClick={() => handleInsertMarkup('\n# ', '\n', '第1章：見出し')}
+                className="flex items-center gap-1 rounded-lg border border-sky-500/40 bg-sky-500/15 px-2.5 py-1 font-semibold text-sky-300 transition hover:bg-sky-500/25"
+                title="チャプター見出しを挿入（撮影画面のチャプター目次からワンクリックでジャンプできます）"
+              >
+                <Hash className="h-3 w-3" />
+                <span>章見出し (#)</span>
+              </button>
+
+              <div className="mx-0.5 h-4 w-[1px] bg-zinc-800" />
+
+              <button
+                type="button"
+                onClick={() => handleInsertMarkup('**', '**', '強調キーワード')}
+                className="flex items-center gap-1 rounded-lg border border-amber-400/40 bg-amber-400/15 px-2.5 py-1 font-bold text-amber-200 transition hover:bg-amber-400/25"
+                title="選択した文字（または新規文字）を黄色太字でハイライト表示します"
+              >
+                <Highlighter className="h-3 w-3" />
+                <span>**黄色強調**</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleInsertMarkup('==', '==', '注目フレーズ')}
+                className="rounded-lg border border-cyan-400/40 bg-cyan-400/15 px-2.5 py-1 font-bold text-cyan-200 transition hover:bg-cyan-400/25"
+                title="選択した文字を水色ハイライトで表示します"
+              >
+                ==水色強調==
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleInsertMarkup('!!', '!!', '重要ポイント')}
+                className="rounded-lg border border-rose-400/40 bg-rose-400/15 px-2.5 py-1 font-bold text-rose-200 transition hover:bg-rose-400/25"
+                title="選択した文字を赤色ハイライトで強調表示します"
+              >
+                !!赤強調!!
+              </button>
+
+              <div className="mx-0.5 h-4 w-[1px] bg-zinc-800" />
+
+              <span className="text-[10px] text-zinc-400">
+                ト書き（音声照合スキップ）:
+              </span>
+              {[
+                { label: '😊 笑顔で', snippet: '[笑顔で]' },
+                { label: '⏸ 1秒ポーズ', snippet: '[1秒ポーズ]' },
+                { label: '👀 カメラ目線', snippet: '[カメラ目線]' },
+                { label: '🖥 画面切替', snippet: '[画面共有へ切替]' },
+                { label: '💬 テロップ', snippet: '[テロップ表示]' },
+              ].map((cue) => (
+                <button
+                  key={cue.label}
+                  type="button"
+                  onClick={() => handleInsertMarkup(cue.snippet, '', '')}
+                  className="rounded-lg border border-violet-500/40 bg-violet-500/15 px-2 py-1 font-medium text-violet-200 transition hover:bg-violet-500/25"
+                  title="[...] で囲まれたト書きは撮影画面で演出バッジとして表示され、声に出して読まなくても自動でスキップされます"
+                >
+                  {cue.label}
+                </button>
+              ))}
+            </div>
+
             <textarea
+              ref={textareaRef}
               value={activeScript.content}
               onChange={(e) => handleContentChange(e.target.value)}
               placeholder="ここにYouTube撮影用の原稿を入力またはペーストしてください。句点（。）や改行ごとに自動でフレーズ分割され、撮影モードでスムーズに追従・表示されます。"
@@ -363,11 +474,11 @@ export function ScriptEditorWorkspace({
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-800/80 pt-3 text-xs text-zinc-400">
               <div className="flex items-center gap-4">
-                <span>文字数: {charCount} 文字</span>
+                <span>発話文字数: {charCount} 文字</span>
                 <span>想定読み上げ時間: 約 {estimatedMinutes} 分</span>
               </div>
               <span className="text-zinc-500">
-                ※ 撮影モード中は誤編集防止のためロックされます
+                ※ `# 見出し` は目次化、`[ト書き]` は音声照合から自動除外されます
               </span>
             </div>
           </div>
