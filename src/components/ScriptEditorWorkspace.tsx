@@ -358,7 +358,7 @@ export function ScriptEditorWorkspace({
               value={activeScript.title}
               onChange={(e) => handleTitleChange(e.target.value)}
               placeholder="原稿タイトルを入力..."
-              className="w-full max-w-lg rounded-xl border border-transparent bg-transparent px-2 py-1 text-lg font-bold text-white transition focus:border-zinc-700 focus:bg-zinc-900 focus:outline-none"
+              className="w-full max-w-2xl rounded-xl border border-transparent bg-transparent px-2 py-1 text-lg font-bold text-white transition focus:border-zinc-700 focus:bg-zinc-900 focus:outline-none"
             />
             <span className="hidden items-center gap-1 text-xs text-zinc-400 sm:inline-flex">
               <Check className="h-3.5 w-3.5 text-emerald-400" />
@@ -411,8 +411,8 @@ export function ScriptEditorWorkspace({
         </header>
 
         {/* Textarea Editor */}
-        <div className="flex flex-1 flex-col overflow-hidden p-6">
-          <div className="mx-auto flex h-full w-full max-w-4xl flex-col rounded-2xl border border-zinc-800/80 bg-zinc-900/30 p-5 shadow-inner">
+        <div className="flex flex-1 flex-col overflow-hidden p-4 md:p-6">
+          <div className="mx-auto flex h-full w-full max-w-[1720px] flex-col rounded-2xl border border-zinc-800/80 bg-zinc-900/30 p-5 shadow-inner">
             {/* Vol.3: Quick Insert Toolbar for Chapters, Highlights & Non-spoken Stage Directions */}
             <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-zinc-800/80 pb-3 text-[11px]">
               <span className="mr-1 flex items-center gap-1 font-semibold text-zinc-400">
@@ -532,12 +532,12 @@ export function ScriptEditorWorkspace({
                 value={activeScript.content}
                 onChange={(e) => handleContentChange(e.target.value)}
                 placeholder="ここにYouTube撮影用の原稿を入力またはペーストしてください。句点（。）や改行ごとに自動でフレーズ分割され、撮影モードでスムーズに追従・表示されます。"
-                className="w-full flex-1 resize-none bg-transparent text-base leading-relaxed text-zinc-100 placeholder-zinc-600 focus:outline-none"
+                className="w-full flex-1 resize-none bg-transparent p-3 text-base md:text-lg leading-relaxed text-zinc-100 placeholder-zinc-600 focus:outline-none"
               />
             )}
 
             {editorTab === 'preview' && (
-              <div className="flex-1 overflow-y-auto rounded-xl border border-zinc-800/80 bg-zinc-950/70 p-5">
+              <div className="flex-1 overflow-y-auto rounded-xl border border-zinc-800/80 bg-zinc-950/70 p-6">
                 <div className="mb-4 flex items-center justify-between border-b border-zinc-800/60 pb-2 text-xs">
                   <span className="font-semibold text-zinc-300">
                     撮影画面プレビュー（装飾反映）
@@ -546,7 +546,7 @@ export function ScriptEditorWorkspace({
                     ※ 本番撮影時と同じハイライト・演出バッジ表示
                   </span>
                 </div>
-                <div className="space-y-4 text-base leading-relaxed text-zinc-100">
+                <div className="space-y-4 text-base md:text-lg leading-relaxed text-zinc-100">
                   {previewSegments.length === 0 ? (
                     <p className="text-sm italic text-zinc-500">
                       原稿を入力すると、ここに装飾プレビューが表示されます。
@@ -580,26 +580,36 @@ export function ScriptEditorWorkspace({
             )}
 
             {editorTab === 'split' && (
-              <div className="flex flex-1 gap-4 overflow-hidden">
-                <div className="flex flex-1 flex-col">
-                  <span className="mb-1.5 text-xs font-semibold text-zinc-400">
-                    Markdown入力
-                  </span>
+              <div className="flex flex-1 gap-6 overflow-hidden">
+                <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-800/80 bg-zinc-950/40 p-4">
+                  <div className="mb-2 flex items-center justify-between border-b border-zinc-800/50 pb-1.5 text-xs text-zinc-400">
+                    <span className="font-semibold text-zinc-300">
+                      Markdown入力
+                    </span>
+                    <span className="text-[11px] text-zinc-500">
+                      原稿テキスト
+                    </span>
+                  </div>
                   <textarea
                     ref={textareaRef}
                     value={activeScript.content}
                     onChange={(e) => handleContentChange(e.target.value)}
                     placeholder="ここに原稿を入力..."
-                    className="w-full flex-1 resize-none rounded-xl border border-zinc-800/80 bg-zinc-950/40 p-3 text-sm leading-relaxed text-zinc-100 placeholder-zinc-600 focus:border-zinc-700 focus:outline-none"
+                    className="w-full flex-1 resize-none bg-transparent p-2 text-base md:text-lg leading-relaxed text-zinc-100 placeholder-zinc-600 focus:outline-none"
                   />
                 </div>
-                <div className="flex flex-1 flex-col overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/70 p-3">
-                  <span className="mb-1.5 text-xs font-semibold text-sky-400">
-                    リアルタイム装飾プレビュー
-                  </span>
-                  <div className="flex-1 overflow-y-auto space-y-3 text-sm leading-relaxed text-zinc-100">
+                <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-800/80 bg-zinc-950/70 p-4">
+                  <div className="mb-2 flex items-center justify-between border-b border-zinc-800/50 pb-1.5 text-xs">
+                    <span className="font-semibold text-sky-400">
+                      リアルタイム装飾プレビュー
+                    </span>
+                    <span className="text-[11px] text-zinc-500">
+                      ※ 撮影時と同じハイライト・演出表示
+                    </span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto space-y-4 p-2 text-base md:text-lg leading-relaxed text-zinc-100">
                     {previewSegments.length === 0 ? (
-                      <p className="text-xs italic text-zinc-500">
+                      <p className="text-sm italic text-zinc-500">
                         原稿を入力すると、ここに装飾プレビューが表示されます。
                       </p>
                     ) : (
@@ -611,8 +621,8 @@ export function ScriptEditorWorkspace({
                         return (
                           <div
                             key={seg.id}
-                            className={`rounded-lg px-1.5 py-0.5 ${
-                              isNewParagraph ? 'mt-4' : ''
+                            className={`rounded-lg px-2 py-1 ${
+                              isNewParagraph ? 'mt-5' : ''
                             }`}
                           >
                             <SegmentRichRenderer
