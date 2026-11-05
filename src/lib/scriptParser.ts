@@ -48,6 +48,149 @@ export function isStageDirectionContent(inner: string): boolean {
 }
 
 /**
+ * Vol.3: 複数行にまたがるブロック強調記法（**〜改行〜**、==〜改行〜==、!!〜改行〜!!）や、
+ * 行頭プレフィックス記法（!!段落内容）、単独の閉鎖タグ行（**、==、!!）を
+ * 統一された行内インライン記法に正規化する。
+ */
+export function normalizeScriptBlocks(content: string): string {
+  if (!content) return '';
+  const lines = content.split(/\r?\n/);
+  const resultLines: string[] = [];
+  let activeBlock: 'yellow' | 'sky' | 'rose' | null = null;
+  let blockBuffer: string[] = [];
+
+  const flushBlock = (marker: string) => {
+    if (blockBuffer.length === 0) return;
+    const joined = blockBuffer.join('\n').trim();
+    if (!joined) {
+      blockBuffer = [];
+      return;
+    }
+    const sents = joined
+      .split(/(?<=[。！？!?])|(?<=\.\s+)/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (sents.length === 0) {
+      resultLines.push(marker + joined + marker);
+    } else {
+      sents.forEach((s) => {
+        let clean = s;
+        if (
+          clean.startsWith(marker) &&
+          clean.endsWith(marker) &&
+          clean.length >= marker.length * 2
+        ) {
+          clean = clean.slice(marker.length, -marker.length).trim();
+        }
+        if (clean) {
+          resultLines.push(marker + clean + marker);
+        }
+      });
+    }
+    blockBuffer = [];
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    // Standalone closing tags
+    if (trimmed === '**' && activeBlock === 'yellow') {
+      flushBlock('**');
+      activeBlock = null;
+      continue;
+    }
+    if (trimmed === '==' && activeBlock === 'sky') {
+      flushBlock('==');
+      activeBlock = null;
+      continue;
+    }
+    if (trimmed === '!!' && activeBlock === 'rose') {
+      flushBlock('!!');
+      activeBlock = null;
+      continue;
+    }
+
+    // Standalone opening tags
+    if (trimmed === '**' && !activeBlock) {
+      activeBlock = 'yellow';
+      continue;
+    }
+    if (trimmed === '==' && !activeBlock) {
+      activeBlock = 'sky';
+      continue;
+    }
+    if (trimmed === '!!' && !activeBlock) {
+      activeBlock = 'rose';
+      continue;
+    }
+
+    // Line starts with marker but has no closing marker on this line
+    if (trimmed.startsWith('**') && !trimmed.slice(2).includes('**')) {
+      if (activeBlock) {
+        flushBlock(
+          activeBlock === 'yellow' ? '**' : activeBlock === 'sky' ? '==' : '!!'
+        );
+      }
+      activeBlock = 'yellow';
+      blockBuffer.push(trimmed.slice(2).trim());
+      continue;
+    }
+    if (trimmed.startsWith('==') && !trimmed.slice(2).includes('==')) {
+      if (activeBlock) {
+        flushBlock(
+          activeBlock === 'yellow' ? '**' : activeBlock === 'sky' ? '==' : '!!'
+        );
+      }
+      activeBlock = 'sky';
+      blockBuffer.push(trimmed.slice(2).trim());
+      continue;
+    }
+    if (trimmed.startsWith('!!') && !trimmed.slice(2).includes('!!')) {
+      // Line prefix syntax
+      if (activeBlock) {
+        flushBlock(
+          activeBlock === 'yellow' ? '**' : activeBlock === 'sky' ? '==' : '!!'
+        );
+      }
+      const contentPart = trimmed.slice(2).trim();
+      const sents = contentPart
+        .split(/(?<=[。！？!?])|(?<=\.\s+)/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (sents.length === 0) {
+        resultLines.push('!!' + contentPart + '!!');
+      } else {
+        sents.forEach((s) => resultLines.push('!!' + s + '!!'));
+      }
+      continue;
+    }
+
+    if (activeBlock) {
+      const marker =
+        activeBlock === 'yellow' ? '**' : activeBlock === 'sky' ? '==' : '!!';
+      if (trimmed.endsWith(marker) && trimmed.length > marker.length) {
+        blockBuffer.push(trimmed.slice(0, -marker.length).trim());
+        flushBlock(marker);
+        activeBlock = null;
+      } else {
+        blockBuffer.push(trimmed);
+      }
+    } else {
+      resultLines.push(rawLine);
+    }
+  }
+
+  if (activeBlock) {
+    flushBlock(
+      activeBlock === 'yellow' ? '**' : activeBlock === 'sky' ? '==' : '!!'
+    );
+  }
+
+  return resultLines.join('\n');
+}
+
+/**
  * Vol.3: 原稿テキストから「ト書き（[笑顔で]・【1秒ポーズ】等）」を除外し、
  * 強調記法（**太字**・==水色==・!!赤強調!!）や見出し記号（# ）の記号部分のみを取り除いて、
  * 実際に声に出して読むテキスト（spokenText）を抽出する。
@@ -56,7 +199,7 @@ export function isStageDirectionContent(inner: string): boolean {
 export function stripStageDirectionsAndFormatting(text: string): string {
   if (!text) return '';
 
-  let cleaned = text;
+  let cleaned = normalizeScriptBlocks(text);
 
   // 1. 行頭の見出し記号 (#, ##, ###) を除去（見出しテキスト自体は残す）
   cleaned = cleaned.replace(/^\s*#{1,4}\s+/, '');
@@ -73,6 +216,9 @@ export function stripStageDirectionsAndFormatting(text: string): string {
   cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
   cleaned = cleaned.replace(/==([^=]+)==/g, '$1');
   cleaned = cleaned.replace(/!!([^!]+)!!/g, '$1');
+
+  // 単独・行頭・行末に残った装飾記号を除去
+  cleaned = cleaned.replace(/(?:^\s*[*=!]{2,}|[*=!]{2,}\s*$)/gm, '');
 
   return cleaned.trim();
 }
@@ -104,6 +250,77 @@ export function parseSegmentInlineTokens(text: string): {
     };
   }
 
+  const trimmed = text.trim();
+  if (trimmed === '**' || trimmed === '==' || trimmed === '!!') {
+    return {
+      tokens: [],
+      totalSpokenChars: 0,
+      isHeading: false,
+      isCueOnly: true,
+    };
+  }
+
+  // 閉鎖漏れ（行頭や行末にのみ装飾記号がある場合）の安全フォールバック
+  if (trimmed.startsWith('**') && !trimmed.slice(2).includes('**')) {
+    const inner = trimmed.slice(2).trim();
+    if (inner) {
+      return {
+        tokens: [
+          {
+            type: 'highlight-yellow',
+            raw: text,
+            content: inner,
+            spokenStartChar: 0,
+            spokenEndChar: inner.length,
+          },
+        ],
+        totalSpokenChars: inner.length,
+        isHeading: false,
+        isCueOnly: false,
+      };
+    }
+  }
+
+  if (trimmed.startsWith('==') && !trimmed.slice(2).includes('==')) {
+    const inner = trimmed.slice(2).trim();
+    if (inner) {
+      return {
+        tokens: [
+          {
+            type: 'highlight-sky',
+            raw: text,
+            content: inner,
+            spokenStartChar: 0,
+            spokenEndChar: inner.length,
+          },
+        ],
+        totalSpokenChars: inner.length,
+        isHeading: false,
+        isCueOnly: false,
+      };
+    }
+  }
+
+  if (trimmed.startsWith('!!') && !trimmed.slice(2).includes('!!')) {
+    const inner = trimmed.slice(2).trim();
+    if (inner) {
+      return {
+        tokens: [
+          {
+            type: 'highlight-rose',
+            raw: text,
+            content: inner,
+            spokenStartChar: 0,
+            spokenEndChar: inner.length,
+          },
+        ],
+        totalSpokenChars: inner.length,
+        isHeading: false,
+        isCueOnly: false,
+      };
+    }
+  }
+
   // 1. Markdown 見出し (# 見出し)
   const hashHeadingMatch = text.match(/^\s*(#{1,4})\s+(.*)$/);
   if (hashHeadingMatch) {
@@ -127,7 +344,6 @@ export function parseSegmentInlineTokens(text: string): {
   }
 
   // 2. 墨付き括弧見出し 【第N章 ...】 や記号見出し ■ / ◆ / 第N章
-  const trimmed = text.trim();
   const bracketHeadingMatch = trimmed.match(/^\s*【([^】\n]+)】\s*$/);
   if (bracketHeadingMatch) {
     const inner = bracketHeadingMatch[1].trim();
@@ -413,7 +629,10 @@ function buildSegmentObject(params: {
 export function parseScriptToSegments(content: string): ScriptSegment[] {
   if (!content.trim()) return [];
 
-  const paragraphs = content.split(/\n+/);
+  // Vol.3: 複数行ブロック記法（**〜改行〜**）、単独閉鎖行（**、==、!!）、
+  // 行頭プレフィックス記法（!!〜）をセグメント分割前に正規化
+  const normalizedContent = normalizeScriptBlocks(content);
+  const paragraphs = normalizedContent.split(/\n+/);
   const segments: ScriptSegment[] = [];
   let globalIndex = 0;
   let charCursor = 0;
@@ -422,6 +641,14 @@ export function parseScriptToSegments(content: string): ScriptSegment[] {
     const trimmedParagraph = rawParagraph.trim();
     if (!trimmedParagraph) {
       charCursor += rawParagraph.length + 1;
+      return;
+    }
+
+    if (
+      trimmedParagraph === '**' ||
+      trimmedParagraph === '==' ||
+      trimmedParagraph === '!!'
+    ) {
       return;
     }
 

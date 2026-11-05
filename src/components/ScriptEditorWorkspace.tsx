@@ -60,7 +60,14 @@ export function ScriptEditorWorkspace({
 }: ScriptEditorWorkspaceProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [saveIndicator, setSaveIndicator] = useState<'saved' | 'saving'>('saved');
-  const [editorTab, setEditorTab] = useState<'edit' | 'preview' | 'split'>('edit');
+  const [editorTab, setEditorTab] = useState<'edit' | 'preview' | 'split'>(
+    () => {
+      if (typeof window !== 'undefined' && window.innerWidth >= 1024) {
+        return 'split';
+      }
+      return 'edit';
+    }
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 

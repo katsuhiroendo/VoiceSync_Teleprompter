@@ -84,6 +84,50 @@ describe('Vol.3 Step 1: Stage directions & highlights', () => {
     expect(seg2Tokens[0].content).toBe('警告キーワード');
   });
 
+  it('correctly handles user screenshot script with multiline blocks and line prefixes', () => {
+    const raw = `[カメラ目線]
+**皆さんこんにちは！今日も動画をご覧いただき、ありがとうございます。
+**
+==今回の動画では、カメラ目線を自然に維持しながら撮影できる「VoiceSync Teleprompter」の活用方法について詳しくご紹介します。
+==
+!!YouTubeの撮影をしていると、原稿を確認するためにどうしても目線が下にずれてしまったり、話すスピードとスクロール速度が合わずに焦ってしまったりすることはありませんか？
+!!このテレプロンプターを使えば、あなたが話した言葉をリアルタイムで認識し、原稿の現在位置を特定して自動的にスクロールしてくれます。`;
+
+    const segs = parseScriptToSegments(raw);
+
+    // Should NOT have bare '**' or '==' or '!' segments
+    expect(segs.some((s) => s.text === '**')).toBe(false);
+    expect(segs.some((s) => s.text === '==')).toBe(false);
+    expect(segs.some((s) => s.text === '!')).toBe(false);
+
+    // Segment 0: cue [カメラ目線]
+    expect(segs[0].isCueOnly).toBe(true);
+
+    // Yellow highlights
+    const yellowSegs = segs.filter((s) =>
+      parseSegmentInlineTokens(s.text).tokens.some(
+        (t) => t.type === 'highlight-yellow'
+      )
+    );
+    expect(yellowSegs.length).toBeGreaterThanOrEqual(1);
+
+    // Sky blue highlight
+    const skySegs = segs.filter((s) =>
+      parseSegmentInlineTokens(s.text).tokens.some(
+        (t) => t.type === 'highlight-sky'
+      )
+    );
+    expect(skySegs.length).toBeGreaterThanOrEqual(1);
+
+    // Rose red highlights
+    const roseSegs = segs.filter((s) =>
+      parseSegmentInlineTokens(s.text).tokens.some(
+        (t) => t.type === 'highlight-rose'
+      )
+    );
+    expect(roseSegs.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('voice tracking skips over cue-only and heading lines', () => {
     const segs = parseScriptToSegments(
       '最初の挨拶をします。\n[笑顔で]\n# 本題\n今回のテーマはテレプロンプターです。'
